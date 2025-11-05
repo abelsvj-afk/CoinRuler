@@ -1,0 +1,133 @@
+{
+  "project": "Ultimate Crypto Advisor Bot",
+  "version": "1.0.0",
+  "status": "in_development",
+  "categories": [
+    {
+      "name": "Core Foundations",
+      "features": [
+        "Fully configured .env for environment variables",
+        "MongoDB connected as persistent memory brain",
+        "Coinbase API integration (dry-run default)",
+        "Discord AI interface for advisory interaction",
+        "Express webhooks for deposits, collateral, and external triggers",
+        "Secure .env secrets with encryption or key vault in production"
+      ]
+    },
+    {
+      "name": "Advanced Market Analysis",
+      "features": [
+        "Real-time price monitoring for BTC, XRP, and approved coins",
+        "News + sentiment analysis from credible sources",
+        "Social sentiment monitoring (Twitter, Reddit, crypto outlets)",
+        "Whale and large transaction detection",
+        "Correlation analysis between BTC, ETH, Gold, and S&P500",
+        "Volatility analysis via Monte Carlo simulations (1000+ trials)",
+        "Predictive short-term price modeling using LSTM or ARIMA"
+      ]
+    },
+    {
+      "name": "Portfolio Management & Strategy",
+      "features": [
+        "Dynamic baseline growth based on deposits",
+        "Never sell or stake below baseline",
+        "XRP profit-taking above baseline (never stake core XRP)",
+        "Adaptive thresholds using Monte Carlo and ML confidence",
+        "Reinvest safe portion of profits for compounding growth",
+        "Strategy performance tracking in MongoDB"
+      ]
+    },
+    {
+      "name": "Machine Learning & AI Enhancements",
+      "features": [
+        "Reinforcement learning for decision optimization",
+        "Predictive modeling for short-term BTC/XRP trends",
+        "Sentiment-to-decision correlation via NLP",
+        "Adaptive learning from user approval behavior",
+        "Persistent MongoDB memory of all trades, approvals, and interactions",
+        "Portfolio health scoring and diversification recommendations"
+      ]
+    },
+    {
+      "name": "Advisory & Interaction Layer",
+      "features": [
+        "GPT-style conversational layer for Discord",
+        "Commands: approve, decline, status, advice, deposit",
+        "Natural language understanding for conversational input",
+        "Optional SMS or mobile notifications for urgent alerts",
+        "Personality memory layer for advisory tone and preferences"
+      ]
+    },
+    {
+      "name": "Staking & Yield Optimization",
+      "features": [
+        "Only stake non-core coins (never BTC/XRP)",
+        "Risk-reward analysis for staking opportunities",
+        "Compare APY yields and lock-in periods",
+        "Require approval before executing staking",
+        "Monitor staking positions and alert at maturity"
+      ]
+    },
+    {
+      "name": "Safety & Security",
+      "features": [
+        "Multi-factor verification for trades/stakes",
+        "Sandbox simulation before execution",
+        "Monitor Coinbase collateral and loan usage",
+        "Alert for extreme volatility or portfolio imbalance",
+        "Audit logs for all user commands and executions",
+        "Encrypted key management and rotation system",
+        "Fraud detection via anomaly pattern recognition"
+      ]
+    },
+    {
+      "name": "Dashboard & Visualization",
+      "features": [
+        "React + Tailwind dashboard for real-time visualization",
+        "Visual AI brain map (profit, staking, Monte Carlo, ML)",
+        "Portfolio metrics and risk indicators",
+        "Performance history and advisory feed",
+        "Interactive alert panel for all recommendations"
+      ]
+    },
+    {
+      "name": "Optional but Powerful Enhancements",
+      "features": [
+        "Backtesting of trading and staking strategies",
+        "Integration with trusted analytics APIs (Glassnode, Messari, CoinMetrics)",
+        "Tax and accounting tracking for realized gains",
+        "What-if portfolio scenario planning",
+        "Multi-strategy reinforcement learning experiments",
+        "Automatic safety shutdown for extreme conditions"
+      ]
+    },
+    {
+      "name": "Real-World Awareness",
+      "features": [
+        "Track Coinbase debit card spending in USDC",
+        "Account for loans/collateral in decisions",
+        "Monitor economic and political events affecting BTC/XRP",
+        "Adjust strategies dynamically to global indicators",
+        "Require approval before adding new tokens"
+      ]
+    },
+    {
+      "name": "Continuous Improvement & Personalization",
+      "features": [
+        "Reinforcement model retraining every 24 hours",
+        "Store user feedback to refine strategies",
+        "Conversational tone memory (adapts communication style)",
+        "Permanent MongoDB memory (never forgets context)",
+        "Adjusts strategy to long-term user goals"
+      ]
+    }
+  ],
+  "rules": {
+    "never_stake_btc_xrp": true,
+    "never_sell_below_baseline": true,
+    "minimum_xrp_hold": 10,
+    "require_approval_new_coins": true,
+    "require_approval_staking": true,
+    "protect_core_baseline": true
+  }
+}
