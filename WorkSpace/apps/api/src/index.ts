@@ -16,10 +16,17 @@ import {
   forceRotationCheck,
   type CredentialService,
 } from '@coinruler/security';
-import { getLLMAdvice, type ChatMessage } from '@coinruler/llm';
+import { getLLMAdvice, streamLLMAdvice, type ChatMessage } from '@coinruler/llm';
+import { EventEmitter } from 'events';
+
+// Real-time event emitter for SSE
+const liveEvents = new EventEmitter();
+liveEvents.setMaxListeners(100); // Support many concurrent SSE clients
 
 const app = express();
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: false, // Allow SSE
+}));
 app.use(express.json());
 app.use(morgan('dev'));
 app.use(rateLimit({ windowMs: 60_000, max: 60 }));
@@ -68,7 +75,9 @@ app.post('/approvals', async (req, res) => {
       createdAt: new Date(),
     };
     const result = await db.collection<Approval>('approvals').insertOne(approval as any);
-    res.json({ id: result.insertedId, ...approval });
+    const created = { id: result.insertedId, ...approval };
+    liveEvents.emit('approval:created', created); // Broadcast to SSE clients
+    res.json(created);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -84,6 +93,7 @@ app.patch('/approvals/:id', async (req, res) => {
       { _id: new ObjectId(id) as any },
       { $set: { status, actedBy, actedAt: new Date() } }
     );
+    liveEvents.emit('approval:updated', { id, status, actedBy }); // Broadcast to SSE clients
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -107,6 +117,7 @@ app.post('/kill-switch', async (req, res) => {
     const { enabled, reason, setBy } = req.body;
     const ks: KillSwitch = { enabled, reason, timestamp: new Date(), setBy };
     await db.collection<KillSwitch>('kill_switch').replaceOne({}, ks, { upsert: true });
+    liveEvents.emit('killswitch:changed', ks); // Broadcast to SSE clients
     res.json(ks);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -234,6 +245,73 @@ app.post('/chat', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Streaming chat endpoint (SSE)
+app.post('/chat/stream', async (req, res) => {
+  try {
+    const { prompt, messages } = req.body as { prompt?: string; messages?: ChatMessage[] };
+    const msgs: ChatMessage[] = messages && messages.length
+      ? messages
+      : [
+          { role: 'system', content: 'You are an expert crypto trading advisor. Be safe, compliant, and actionable.' },
+          { role: 'user', content: prompt || 'Give me crypto trading advice.' },
+        ];
+
+    res.set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    });
+    res.flushHeaders();
+
+    await streamLLMAdvice(msgs, (token) => {
+      res.write(`data: ${JSON.stringify({ token })}\n\n`);
+    }, { user: 'web-dashboard' });
+
+    res.write(`data: [DONE]\n\n`);
+    res.end();
+  } catch (err: any) {
+    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
+    res.end();
+  }
+});
+
+// SSE endpoint for live updates
+app.get('/live', (req, res) => {
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no', // Disable nginx buffering
+  });
+
+  res.flushHeaders();
+
+  // Send initial connection event
+  res.write(`data: ${JSON.stringify({ type: 'connected', ts: new Date().toISOString() })}\n\n`);
+
+  // Event handlers
+  const handlers = {
+    'approval:created': (data: any) => res.write(`data: ${JSON.stringify({ type: 'approval:created', data })}\n\n`),
+    'approval:updated': (data: any) => res.write(`data: ${JSON.stringify({ type: 'approval:updated', data })}\n\n`),
+    'killswitch:changed': (data: any) => res.write(`data: ${JSON.stringify({ type: 'killswitch:changed', data })}\n\n`),
+    'portfolio:updated': (data: any) => res.write(`data: ${JSON.stringify({ type: 'portfolio:updated', data })}\n\n`),
+    'alert': (data: any) => res.write(`data: ${JSON.stringify({ type: 'alert', data })}\n\n`),
+  };
+
+  Object.entries(handlers).forEach(([event, handler]) => liveEvents.on(event, handler));
+
+  // Heartbeat every 30s to keep connection alive
+  const heartbeat = setInterval(() => {
+    res.write(`: heartbeat\n\n`);
+  }, 30000);
+
+  // Cleanup on client disconnect
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    Object.entries(handlers).forEach(([event, handler]) => liveEvents.removeListener(event, handler));
+  });
 });
 
 const port = Number(process.env.PORT || 3001);

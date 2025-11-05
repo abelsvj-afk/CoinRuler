@@ -16,15 +16,55 @@ export default function ChatPage() {
     setMessages(next);
     setInput("");
     setLoading(true);
+
     try {
-      const res = await fetch(`${api}/chat`, {
+      // Use streaming endpoint
+      const res = await fetch(`${api}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: next }),
       });
-      const data = await res.json();
-      const reply = (data?.reply as string) || "[no reply]";
-      setMessages([...next, { role: "assistant", content: reply }]);
+
+      if (!res.body) throw new Error("No response body");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let reply = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            const data = line.slice(6);
+            if (data === "[DONE]") {
+              setMessages([...next, { role: "assistant", content: reply }]);
+              return;
+            }
+            try {
+              const parsed = JSON.parse(data);
+              if (parsed.token) {
+                reply += parsed.token;
+                setMessages([...next, { role: "assistant", content: reply }]);
+              }
+            } catch (_) {
+              // Ignore parse errors
+            }
+          }
+        }
+      }
+
+      if (reply) {
+        setMessages([...next, { role: "assistant", content: reply }]);
+      } else {
+        throw new Error("No reply from bot");
+      }
     } catch (e: any) {
       setMessages([...next, { role: "assistant", content: `Error: ${e.message || e}` }]);
     } finally {
