@@ -18,7 +18,7 @@ const client = new Client({
   ],
 });
 
-const apiBase = process.env.API_BASE_URL || 'http://localhost:3001';
+const apiBase = process.env.API_BASE_URL || process.env.API_BASE || 'http://localhost:3001';
 
 client.on('ready', () => {
   console.log(`Bot logged in as ${client.user?.tag}`);

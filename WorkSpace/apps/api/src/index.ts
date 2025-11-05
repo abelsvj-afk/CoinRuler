@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import helmet from 'helmet';
+import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { MongoClient, Db, ObjectId } from 'mongodb';
@@ -19,6 +20,48 @@ import {
 import { getLLMAdvice, streamLLMAdvice, type ChatMessage } from '@coinruler/llm';
 import { EventEmitter } from 'events';
 
+// Coinbase WebSocket for live prices (browser environment compatibility)
+let coinbaseWsClient: any = null;
+
+// Initialize Coinbase WebSocket if in browser-like environment
+if (typeof WebSocket !== 'undefined') {
+  try {
+    const { getCoinbaseWebSocketClient } = require('@coinruler/shared/coinbaseWebSocket');
+    coinbaseWsClient = getCoinbaseWebSocketClient();
+    
+    // Connect and forward events to SSE clients
+    coinbaseWsClient.connect();
+    
+    coinbaseWsClient.on('price:update', (data: any) => {
+      liveEvents.emit('price', data);
+    });
+    
+    coinbaseWsClient.on('whale:trade', (data: any) => {
+      liveEvents.emit('alert', {
+        type: 'whale',
+        severity: 'high',
+        message: `Large ${data.symbol} trade: $${data.value.toFixed(2)}`,
+        data,
+        timestamp: new Date().toISOString(),
+      });
+    });
+    
+    coinbaseWsClient.on('alert:volatility', (data: any) => {
+      liveEvents.emit('alert', {
+        type: 'volatility',
+        severity: data.severity,
+        message: `${data.symbol} moved ${data.change.toFixed(2)}%`,
+        data,
+        timestamp: new Date().toISOString(),
+      });
+    });
+    
+    console.log('✅ Coinbase WebSocket integration enabled');
+  } catch (err) {
+    console.log('⚠️  Coinbase WebSocket not available (Node.js environment)');
+  }
+}
+
 // Real-time event emitter for SSE
 const liveEvents = new EventEmitter();
 liveEvents.setMaxListeners(100); // Support many concurrent SSE clients
@@ -27,6 +70,14 @@ const app = express();
 app.use(helmet({
   contentSecurityPolicy: false, // Allow SSE
 }));
+// CORS to allow the web app to call the API from a different port
+const WEB_ORIGIN = process.env.WEB_ORIGIN || process.env.NEXT_PUBLIC_WEB_ORIGIN || 'http://localhost:3000';
+app.use(cors({
+  origin: WEB_ORIGIN,
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  credentials: true,
+}));
+app.options('*', cors());
 app.use(express.json());
 app.use(morgan('dev'));
 app.use(rateLimit({ windowMs: 60_000, max: 60 }));
@@ -37,12 +88,40 @@ let db: Db | null = null;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017';
 const DATABASE_NAME = process.env.DATABASE_NAME || 'coinruler';
 
-MongoClient.connect(MONGODB_URI)
+// Connection options to fix SSL/TLS issues
+// Note: tlsAllowInvalidCertificates set to true temporarily for MongoDB Atlas compatibility
+const mongoOptions = {
+  tls: true,
+  tlsAllowInvalidCertificates: true, // Temporary fix for Atlas TLS mismatch
+  tlsAllowInvalidHostnames: false,
+  serverSelectionTimeoutMS: 10000,
+  retryWrites: true,
+  w: 'majority' as const,
+  maxPoolSize: 10,
+};
+
+MongoClient.connect(MONGODB_URI, mongoOptions)
   .then((client) => {
     db = client.db(DATABASE_NAME);
-    console.log('MongoDB connected');
+    console.log('✅ MongoDB connected successfully');
+    // Emit health event
+    liveEvents.emit('system:health', { component: 'mongodb', status: 'connected' });
   })
-  .catch((err) => console.error('MongoDB connection error:', err));
+  .catch((err) => {
+    console.error('❌ MongoDB connection error:', err.message);
+    console.error('Full error:', err);
+    // Retry connection after 10 seconds
+    setTimeout(() => {
+      console.log('🔄 Retrying MongoDB connection...');
+      MongoClient.connect(MONGODB_URI, mongoOptions)
+        .then((client) => {
+          db = client.db(DATABASE_NAME);
+          console.log('✅ MongoDB reconnected successfully');
+          liveEvents.emit('system:health', { component: 'mongodb', status: 'reconnected' });
+        })
+        .catch((retryErr) => console.error('❌ MongoDB retry failed:', retryErr.message));
+    }, 10000);
+  });
 
 // Health check
 app.get('/health', (_req, res) => res.json({ ok: true, db: db ? 'connected' : 'disconnected' }));
@@ -314,17 +393,30 @@ app.get('/live', (req, res) => {
   });
 });
 
-const port = Number(process.env.PORT || 3001);
+const port = Number(process.env.API_PORT || process.env.PORT || 3001);
 app.listen(port, async () => {
   console.log(`API listening on :${port}`);
   
   // Start credential rotation scheduler on startup
   if (db) {
-    await startRotationScheduler(db, {
-      checkIntervalHours: 24,
-      enabled: process.env.ROTATION_SCHEDULER_ENABLED !== 'false',
-      notifyOnRotation: true,
-      notifyOnFailure: true,
-    });
+    try {
+      await startRotationScheduler(db, {
+        checkIntervalHours: 24,
+        enabled: process.env.ROTATION_SCHEDULER_ENABLED !== 'false',
+        notifyOnRotation: true,
+        notifyOnFailure: true,
+      });
+      console.log('Rotation scheduler started');
+    } catch (err: any) {
+      console.warn('Rotation scheduler failed to start:', err?.message || err);
+    }
   }
+});
+
+// Safety: prevent process exit on unexpected errors
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', reason);
 });

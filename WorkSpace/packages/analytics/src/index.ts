@@ -173,6 +173,7 @@ export async function computeCorrelation(symbol1: string, symbol2: string, days 
 
 async function fetchHistoricalPrices(symbol: string, days: number): Promise<PriceData[]> {
   try {
+    const CG_KEY = process.env.COINGECKO_API_KEY || process.env.COIN_GECKO_API_KEY;
     const coinId = symbol.toLowerCase() === 'btc' ? 'bitcoin' : 
                    symbol.toLowerCase() === 'eth' ? 'ethereum' :
                    symbol.toLowerCase() === 'xrp' ? 'ripple' : symbol.toLowerCase();
@@ -183,8 +184,8 @@ async function fetchHistoricalPrices(symbol: string, days: number): Promise<Pric
       days: days.toString(),
       interval: 'daily',
     };
-    
-    const response = await axios.get(url, { params, timeout: 10000 });
+    const headers = CG_KEY ? { 'x-cg-pro-api-key': CG_KEY } : undefined;
+    const response = await axios.get(url, { params, headers, timeout: 10000 });
     
     return response.data.prices.map(([timestamp, price]: [number, number]) => ({
       symbol,

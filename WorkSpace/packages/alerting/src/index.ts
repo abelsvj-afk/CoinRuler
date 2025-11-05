@@ -79,6 +79,7 @@ export async function monitorVolatility(symbols: string[], thresholdPercent = 5)
 
 async function fetchCurrentPrice(symbol: string): Promise<number | null> {
   try {
+    const CG_KEY = process.env.COINGECKO_API_KEY || process.env.COIN_GECKO_API_KEY;
     const coinId = symbol.toLowerCase() === 'btc' ? 'bitcoin' :
                    symbol.toLowerCase() === 'eth' ? 'ethereum' :
                    symbol.toLowerCase() === 'xrp' ? 'ripple' : symbol.toLowerCase();
@@ -89,7 +90,8 @@ async function fetchCurrentPrice(symbol: string): Promise<number | null> {
       vs_currencies: 'usd',
     };
 
-    const response = await axios.get(url, { params, timeout: 5000 });
+    const headers = CG_KEY ? { 'x-cg-pro-api-key': CG_KEY } : undefined;
+    const response = await axios.get(url, { params, headers, timeout: 5000 });
     return response.data[coinId]?.usd || null;
   } catch (error) {
     return null;
