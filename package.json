@@ -4,8 +4,8 @@
   "description": "Ultimate Crypto Advisor Bot",
   "main": "dist/index.js",
   "scripts": {
-    "start": "ts-node src/index.ts",
-    "build": "tsc",
+    "start": "node bot.js",
+    "build": "echo \"Skipping TypeScript build on Railway; using runtime JS entry bot.js\"",
     "test": "jest"
   },
   "dependencies": {
