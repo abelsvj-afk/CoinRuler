@@ -38,16 +38,16 @@ client.on('interactionCreate', async (interaction) => {
 
   try {
     if (commandName === 'ping') {
-      await interaction.reply('Pong! 🏓');
+      await interaction.reply({ content: 'Pong! 🏓', ephemeral: true });
       return;
     }
 
     if (commandName === 'status') {
       try {
         const { data } = await axios.get(`${apiBase}/status`);
-        await interaction.reply('Status: ' + JSON.stringify(data));
+        await interaction.reply({ content: 'Status: ' + JSON.stringify(data), ephemeral: true });
       } catch (e: any) {
-        await interaction.reply('Error fetching status: ' + (e?.message || 'unknown'));
+        await interaction.reply({ content: 'Error fetching status: ' + (e?.message || 'unknown'), ephemeral: true });
       }
       return;
     }
@@ -56,22 +56,22 @@ client.on('interactionCreate', async (interaction) => {
       try {
         const { data } = await axios.get(`${apiBase}/approvals`);
         if (!data || data.length === 0) {
-          await interaction.reply('No pending approvals.');
+          await interaction.reply({ content: 'No pending approvals.', ephemeral: true });
           return;
         }
         const lines = data.map((a: any, i: number) => 
           `${i + 1}. [${a._id}] ${a.title} - ${a.coin} ${a.amount}`
         );
-        await interaction.reply('Pending approvals:\n' + lines.join('\n'));
+        await interaction.reply({ content: 'Pending approvals:\n' + lines.join('\n'), ephemeral: true });
       } catch (e: any) {
-        await interaction.reply('Error fetching approvals: ' + (e?.message || 'unknown'));
+        await interaction.reply({ content: 'Error fetching approvals: ' + (e?.message || 'unknown'), ephemeral: true });
       }
       return;
     }
 
     if (commandName === 'approve') {
       if (OWNER_ID && interaction.user.id !== OWNER_ID) {
-        await interaction.reply('❌ Unauthorized');
+        await interaction.reply({ content: '❌ Unauthorized', ephemeral: true });
         return;
       }
       const id = interaction.options.getString('id', true);
@@ -80,16 +80,16 @@ client.on('interactionCreate', async (interaction) => {
           status: 'approved', 
           actedBy: interaction.user.id 
         });
-        await interaction.reply(`✅ Approval ${id} approved.`);
+        await interaction.reply({ content: `✅ Approval ${id} approved.`, ephemeral: true });
       } catch (e: any) {
-        await interaction.reply('❌ Error approving: ' + (e?.message || 'unknown'));
+        await interaction.reply({ content: '❌ Error approving: ' + (e?.message || 'unknown'), ephemeral: true });
       }
       return;
     }
 
     if (commandName === 'decline') {
       if (OWNER_ID && interaction.user.id !== OWNER_ID) {
-        await interaction.reply('❌ Unauthorized');
+        await interaction.reply({ content: '❌ Unauthorized', ephemeral: true });
         return;
       }
       const id = interaction.options.getString('id', true);
@@ -98,16 +98,16 @@ client.on('interactionCreate', async (interaction) => {
           status: 'declined', 
           actedBy: interaction.user.id 
         });
-        await interaction.reply(`✅ Approval ${id} declined.`);
+        await interaction.reply({ content: `✅ Approval ${id} declined.`, ephemeral: true });
       } catch (e: any) {
-        await interaction.reply('❌ Error declining: ' + (e?.message || 'unknown'));
+        await interaction.reply({ content: '❌ Error declining: ' + (e?.message || 'unknown'), ephemeral: true });
       }
       return;
     }
 
     if (commandName === 'panic') {
       if (OWNER_ID && interaction.user.id !== OWNER_ID) {
-        await interaction.reply('❌ Unauthorized');
+        await interaction.reply({ content: '❌ Unauthorized', ephemeral: true });
         return;
       }
       try {
@@ -116,16 +116,16 @@ client.on('interactionCreate', async (interaction) => {
           reason: 'Panic triggered by user',
           setBy: interaction.user.id 
         });
-        await interaction.reply('🚨 PANIC MODE ACTIVATED - All trading stopped');
+        await interaction.reply({ content: '🚨 PANIC MODE ACTIVATED - All trading stopped', ephemeral: true });
       } catch (e: any) {
-        await interaction.reply('❌ Error activating panic: ' + (e?.message || 'unknown'));
+        await interaction.reply({ content: '❌ Error activating panic: ' + (e?.message || 'unknown'), ephemeral: true });
       }
       return;
     }
 
     if (commandName === 'resume') {
       if (OWNER_ID && interaction.user.id !== OWNER_ID) {
-        await interaction.reply('❌ Unauthorized');
+        await interaction.reply({ content: '❌ Unauthorized', ephemeral: true });
         return;
       }
       try {
@@ -134,16 +134,16 @@ client.on('interactionCreate', async (interaction) => {
           reason: 'Resumed by user',
           setBy: interaction.user.id 
         });
-        await interaction.reply('✅ Trading resumed');
+        await interaction.reply({ content: '✅ Trading resumed', ephemeral: true });
       } catch (e: any) {
-        await interaction.reply('❌ Error resuming: ' + (e?.message || 'unknown'));
+        await interaction.reply({ content: '❌ Error resuming: ' + (e?.message || 'unknown'), ephemeral: true });
       }
       return;
     }
 
     if (commandName === 'advice') {
       const prompt = interaction.options.getString('prompt') || 'Give me crypto trading advice.';
-      await interaction.deferReply();
+      await interaction.deferReply({ ephemeral: true });
       try {
         const reply = await getLLMAdvice([
           { role: 'system', content: 'You are an expert crypto trading advisor. Be safe, compliant, and actionable.' },
@@ -158,7 +158,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (commandName === 'rotation-status') {
       if (OWNER_ID && interaction.user.id !== OWNER_ID) {
-        await interaction.reply('❌ Unauthorized');
+        await interaction.reply({ content: '❌ Unauthorized', ephemeral: true });
         return;
       }
       try {
@@ -166,20 +166,20 @@ client.on('interactionCreate', async (interaction) => {
         const lines = data.map((item: any) =>
           `${item.service}: ${item.enabled ? '✅ Enabled' : '❌ Disabled'} | Last: ${item.lastRotation ? new Date(item.lastRotation).toLocaleDateString() : 'Never'} | Due: ${item.isDue ? '⚠️ YES' : '✅ No'}`
         );
-        await interaction.reply('**Credential Rotation Status**\n' + lines.join('\n'));
+        await interaction.reply({ content: '**Credential Rotation Status**\n' + lines.join('\n'), ephemeral: true });
       } catch (e: any) {
-        await interaction.reply('❌ Error fetching rotation status: ' + (e?.message || 'unknown'));
+        await interaction.reply({ content: '❌ Error fetching rotation status: ' + (e?.message || 'unknown'), ephemeral: true });
       }
       return;
     }
 
     if (commandName === 'rotate') {
       if (OWNER_ID && interaction.user.id !== OWNER_ID) {
-        await interaction.reply('❌ Unauthorized');
+        await interaction.reply({ content: '❌ Unauthorized', ephemeral: true });
         return;
       }
       const service = interaction.options.getString('service', true);
-      await interaction.deferReply();
+      await interaction.deferReply({ ephemeral: true });
       try {
         const { data } = await axios.post(`${apiBase}/rotation/rotate/${service}`);
         if (data.success) {
@@ -195,10 +195,10 @@ client.on('interactionCreate', async (interaction) => {
 
     if (commandName === 'rotation-check') {
       if (OWNER_ID && interaction.user.id !== OWNER_ID) {
-        await interaction.reply('❌ Unauthorized');
+        await interaction.reply({ content: '❌ Unauthorized', ephemeral: true });
         return;
       }
-      await interaction.deferReply();
+      await interaction.deferReply({ ephemeral: true });
       try {
         await axios.post(`${apiBase}/rotation/scheduler/check`);
         await interaction.editReply('✅ Rotation check completed. Check logs for details.');
