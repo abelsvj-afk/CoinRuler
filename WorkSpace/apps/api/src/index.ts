@@ -16,6 +16,7 @@ import {
   forceRotationCheck,
   type CredentialService,
 } from '@coinruler/security';
+import { getLLMAdvice, type ChatMessage } from '@coinruler/llm';
 
 const app = express();
 app.use(helmet());
@@ -213,6 +214,23 @@ app.post('/rotation/scheduler/check', async (_req, res) => {
   try {
     await forceRotationCheck(db);
     res.json({ ok: true, message: 'Rotation check triggered' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Chat (LLM) endpoint
+app.post('/chat', async (req, res) => {
+  try {
+    const { prompt, messages } = req.body as { prompt?: string; messages?: ChatMessage[] };
+    const msgs: ChatMessage[] = messages && messages.length
+      ? messages
+      : [
+          { role: 'system', content: 'You are an expert crypto trading advisor. Be safe, compliant, and actionable.' },
+          { role: 'user', content: prompt || 'Give me crypto trading advice.' },
+        ];
+    const reply = await getLLMAdvice(msgs, { user: 'web-dashboard' });
+    res.json({ reply });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

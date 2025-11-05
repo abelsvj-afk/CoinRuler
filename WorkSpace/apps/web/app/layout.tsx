@@ -31,6 +31,8 @@ export default function RootLayout({
             <a href="/dashboard" className="underline">Dashboard</a>
             <a href="/approvals" className="underline">Approvals</a>
             <a href="/rotation" className="underline">Rotation</a>
+            <a href="/commands" className="underline">Commands</a>
+            <a href="/chat" className="underline">Chat</a>
           </nav>
         </header>
         <div className="max-w-5xl mx-auto">

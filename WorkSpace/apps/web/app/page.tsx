@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { getApiBase } from './lib/api';
 
 interface DashboardData {
   portfolio: any;
@@ -11,12 +12,12 @@ interface DashboardData {
 export default function Home() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+  const apiUrl = getApiBase();
 
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const response = await fetch(`${apiUrl}/dashboard`);
+  const response = await fetch(`${apiUrl}/dashboard`, { cache: 'no-store' });
         const json = await response.json();
         setData(json);
       } catch (err) {
@@ -26,7 +27,7 @@ export default function Home() {
       }
     };
     fetchData();
-    const interval = setInterval(fetchData, 30000); // refresh every 30s
+    const interval = setInterval(fetchData, 5000); // refresh every 5s for near-live updates
     return () => clearInterval(interval);
   }, [apiUrl]);
 
