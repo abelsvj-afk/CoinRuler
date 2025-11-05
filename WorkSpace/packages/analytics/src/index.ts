@@ -30,46 +30,101 @@ export interface PriceData {
   price: number;
 }
 
-// Whale Alert API integration
+// Whale data provider router: Abyiss → Whale Alert → mock
 export async function fetchWhaleAlerts(symbols: string[]): Promise<WhaleTransaction[]> {
+  const ABYISS_KEY = process.env.ABYISS_API_KEY;
   const WHALE_ALERT_KEY = process.env.WHALE_ALERT_API_KEY;
   
-  if (!WHALE_ALERT_KEY) {
-    console.warn('[Analytics] Whale Alert API key not set, returning mock data');
-    return symbols.map(symbol => ({
-      symbol,
-      amount: Math.random() * 1000,
-      usdValue: Math.random() * 1000000,
-      timestamp: new Date().toISOString(),
-      type: 'large_transfer' as const,
-      source: 'mock',
-    }));
+  // Priority 1: Abyiss (if configured)
+  if (ABYISS_KEY) {
+    console.log('[Analytics] Using Abyiss provider for whale data');
+    try {
+      return await fetchWhaleFromAbyiss(symbols);
+    } catch (error: any) {
+      console.error('[Analytics] Abyiss provider failed:', error.message);
+      console.log('[Analytics] Falling back to next provider...');
+    }
   }
+  
+  // Priority 2: Whale Alert (if configured)
+  if (WHALE_ALERT_KEY) {
+    console.log('[Analytics] Using Whale Alert provider for whale data');
+    try {
+      return await fetchWhaleFromWhaleAlert(symbols, WHALE_ALERT_KEY);
+    } catch (error: any) {
+      console.error('[Analytics] Whale Alert provider failed:', error.message);
+      console.log('[Analytics] Falling back to mock provider...');
+    }
+  }
+  
+  // Priority 3: Mock data (always available)
+  console.warn('[Analytics] No whale provider configured, using mock data');
+  return fetchWhaleFromMock(symbols);
+}
 
-  try {
-    const url = `https://api.whale-alert.io/v1/transactions`;
-    const params = {
-      api_key: WHALE_ALERT_KEY,
-      min_value: 500000, // minimum $500k transactions
-      limit: 100,
-    };
-    const response = await axios.get(url, { params, timeout: 10000 });
-    
-    return response.data.transactions
-      .filter((tx: any) => symbols.includes(tx.symbol.toUpperCase()))
-      .map((tx: any) => ({
-        symbol: tx.symbol.toUpperCase(),
-        amount: tx.amount,
-        usdValue: tx.amount_usd,
-        timestamp: new Date(tx.timestamp * 1000).toISOString(),
-        type: tx.to?.owner_type === 'exchange' ? 'exchange_deposit' : 
-              tx.from?.owner_type === 'exchange' ? 'exchange_withdrawal' : 'large_transfer',
-        source: 'whale-alert',
-      }));
-  } catch (error: any) {
-    console.error('[Analytics] Whale Alert API error:', error.message);
-    return [];
-  }
+async function fetchWhaleFromAbyiss(symbols: string[]): Promise<WhaleTransaction[]> {
+  const ABYISS_KEY = process.env.ABYISS_API_KEY;
+  const ABYISS_PROVIDER = process.env.ABYISS_PROVIDER || 'abyiss';
+  const MIN_USD = Number(process.env.ABYISS_WHALE_MIN_USD) || 500000;
+  const EXCHANGE = process.env.ABYISS_DEFAULT_EXCHANGE || 'coinbase';
+  
+  // Abyiss API endpoint (adjust based on actual Abyiss API docs)
+  const url = `https://api.abyiss.com/v1/trades/large`;
+  const params = {
+    exchange: EXCHANGE,
+    minUsd: MIN_USD,
+    symbols: symbols.join(','),
+  };
+  const headers = {
+    'Authorization': `Bearer ${ABYISS_KEY}`,
+    'Content-Type': 'application/json',
+  };
+  
+  const response = await axios.get(url, { params, headers, timeout: 10000 });
+  
+  return (response.data?.trades || []).map((tx: any) => ({
+    symbol: tx.symbol?.toUpperCase() || 'UNKNOWN',
+    amount: tx.amount || 0,
+    usdValue: tx.usdValue || tx.value_usd || 0,
+    timestamp: tx.timestamp || new Date().toISOString(),
+    type: tx.type || 'large_transfer' as const,
+    source: 'abyiss',
+  }));
+}
+
+async function fetchWhaleFromWhaleAlert(symbols: string[], apiKey: string): Promise<WhaleTransaction[]> {
+  const MIN_USD = Number(process.env.WHALE_ALERT_MIN_USD) || 1000000;
+  
+  const url = `https://api.whale-alert.io/v1/transactions`;
+  const params = {
+    api_key: apiKey,
+    min_value: MIN_USD,
+    limit: 100,
+  };
+  const response = await axios.get(url, { params, timeout: 10000 });
+  
+  return (response.data?.transactions || [])
+    .filter((tx: any) => symbols.includes(tx.symbol?.toUpperCase()))
+    .map((tx: any) => ({
+      symbol: tx.symbol?.toUpperCase() || 'UNKNOWN',
+      amount: tx.amount || 0,
+      usdValue: tx.amount_usd || 0,
+      timestamp: new Date((tx.timestamp || Date.now() / 1000) * 1000).toISOString(),
+      type: tx.to?.owner_type === 'exchange' ? 'exchange_deposit' : 
+            tx.from?.owner_type === 'exchange' ? 'exchange_withdrawal' : 'large_transfer',
+      source: 'whale-alert',
+    }));
+}
+
+function fetchWhaleFromMock(symbols: string[]): WhaleTransaction[] {
+  return symbols.map(symbol => ({
+    symbol,
+    amount: Math.random() * 1000,
+    usdValue: 500000 + Math.random() * 2000000,
+    timestamp: new Date().toISOString(),
+    type: 'large_transfer' as const,
+    source: 'mock',
+  }));
 }
 
 // Social sentiment from News API or similar
