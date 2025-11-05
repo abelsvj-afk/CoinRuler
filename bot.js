@@ -24,6 +24,10 @@ const { MongoClient, ObjectId } = require('mongodb');
 const axios = require('axios');
 const cron = require('node-cron');
 const express = require('express');
+const { analyzeText, fetchNewsSentiment } = require('./lib/sentiment');
+const { predictShortTerm, trainReinforcement } = require('./lib/ml');
+const { generateDailyReport } = require('./lib/reporting');
+const { runBacktest } = require('./lib/backtest');
 // const crypto = require('crypto'); // reserved for future use
 
 // ============ CONFIGURATION ============
@@ -165,9 +169,99 @@ app.post('/webhook/collateral', async (req, res) => {
   }
 });
 
+// Admin: toggle kill-switch (POST { enabled: true/false, reason: '' })
+app.post('/admin/kill-switch', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'db unavailable' });
+    const body = req.body || {};
+    const ok = await setKillSwitch(!!body.enabled, body.reason || '');
+    if (!ok) return res.status(500).json({ error: 'failed' });
+    return res.json({ status: 'ok', enabled: !!body.enabled });
+  } catch (err) {
+    console.error('kill-switch endpoint error:', err && err.message ? err.message : err);
+    return res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Admin: list approvals
+app.get('/admin/approvals', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'db unavailable' });
+    const rows = await db.collection('approvals').find().sort({ createdAt: -1 }).limit(200).toArray();
+    return res.json({ approvals: rows });
+  } catch (err) {
+    console.error('admin/approvals error:', err && err.message ? err.message : err);
+    return res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Backtest endpoint: POST { strategy: {buyThreshold, sellThreshold}, data: [{date,price}] }
+app.post('/admin/backtest', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const strategy = body.strategy || { buyThreshold: 0, sellThreshold: Infinity };
+    const data = body.data || [];
+    const result = await runBacktest(strategy, data);
+    return res.json({ ok: true, result });
+  } catch (e) {
+    console.error('backtest error:', e && e.message ? e.message : e);
+    return res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Scenario planning endpoint: POST { scenario: { priceShockPct } }
+app.post('/admin/whatif', async (req, res) => {
+  try {
+    const scenario = req.body && req.body.scenario ? req.body.scenario : null;
+    if (!scenario) return res.status(400).json({ error: 'scenario required' });
+    const portfolio = await getPortfolioSnapshot();
+    // Apply simple price shock
+    const shocked = Object.assign({}, portfolio._prices || {});
+    Object.keys(shocked).forEach(k => { shocked[k] = shocked[k] * (1 + (scenario.priceShockPct || 0)); });
+    // compute new USD value
+    let total = 0;
+    Object.keys(portfolio).forEach(c => {
+      if (c === '_prices') return;
+      const amt = Number(portfolio[c]) || 0;
+      const p = shocked[c] || (portfolio._prices && portfolio._prices[c]) || 0;
+      total += amt * p;
+    });
+    return res.json({ ok: true, shockedPrices: shocked, shockedValue: total });
+  } catch (e) {
+    console.error('whatif error:', e && e.message ? e.message : e);
+    return res.status(500).json({ error: 'internal' });
+  }
+});
+
+// Feedback endpoint to store user feedback for continuous improvement
+app.post('/feedback', async (req, res) => {
+  try {
+    const { userId, text, rating } = req.body || {};
+    if (!text) return res.status(400).json({ error: 'text required' });
+    if (!db) return res.status(503).json({ error: 'db unavailable' });
+    await db.collection('feedback').insertOne({ userId: userId || null, text, rating: rating || null, timestamp: new Date() });
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error('feedback error:', e && e.message ? e.message : e);
+    return res.status(500).json({ error: 'internal' });
+  }
+});
+
 // Health endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', db: !!db, dryRun: DRY_RUN });
+});
+
+// Dashboard endpoint (simple JSON for now)
+app.get('/dashboard', async (req, res) => {
+  try {
+    const latestSnapshot = db ? await db.collection('portfolioSnapshots').find().sort({ timestamp: -1 }).limit(1).toArray() : [];
+    const reports = db ? await db.collection('reports').find().sort({ createdAt: -1 }).limit(10).toArray() : [];
+    return res.json({ snapshot: latestSnapshot[0] || null, recentReports: reports });
+  } catch (e) {
+    console.error('dashboard error:', e && e.message ? e.message : e);
+    return res.status(500).json({ error: 'internal' });
+  }
 });
 
 // ============ BASELINE / DEPOSITS ============
@@ -215,6 +309,30 @@ async function getBaseline(coin) {
     return coin === 'XRP' ? BASELINE_XRP_MIN : 0;
   }
 }
+
+// ============ KILL-SWITCH ============
+async function setKillSwitch(enabled, reason = '') {
+  if (!db) return false;
+  try {
+    await db.collection('kill_switch').updateOne({}, { $set: { enabled: !!enabled, reason, updatedAt: new Date() } }, { upsert: true });
+    return true;
+  } catch (e) {
+    console.error('setKillSwitch error:', e && e.message ? e.message : e);
+    return false;
+  }
+}
+
+async function getKillSwitch() {
+  if (!db) return false;
+  try {
+    const doc = await db.collection('kill_switch').findOne({});
+    return doc && doc.enabled;
+  } catch (e) {
+    console.error('getKillSwitch error:', e && e.message ? e.message : e);
+    return false;
+  }
+}
+
 
 // Build portfolio object by summing deposits (safe, read-only)
 async function buildPortfolioFromDeposits() {
@@ -297,12 +415,36 @@ async function setApprovalStatus(id, status, actedBy) {
       return { ok: true };
     }
     const res = await db.collection('approvals').findOneAndUpdate({ _id: id }, { $set: { status, actedBy, actedAt: new Date() } }, { returnDocument: 'after' });
-    return res.value;
+    const approval = res.value;
+    // If approved and not DRY_RUN, attempt to execute
+    if (approval && approval.status === 'approved') {
+      // If kill-switch is active, do not execute
+      const kill = await getKillSwitch();
+      if (kill) {
+        console.warn('Kill-switch active: approval execution deferred');
+        await db.collection('approvals').updateOne({ _id: approval._id }, { $set: { executionDeferred: true } });
+        return approval;
+      }
+      if (!DRY_RUN) {
+        // Execute in background
+        executeApproval(approval).catch(err => console.error('executeApproval failed:', err));
+      } else {
+        console.log('[Approval - dryrun] would execute', approval._id);
+      }
+    }
+    return approval;
   } catch (err) {
     console.error('setApprovalStatus error:', err && err.message ? err.message : err);
     return null;
   }
 }
+
+/**
+ * Execute an approval (placeholder for real exchange integration).
+ * Marks approval as executed and logs the action to memory.
+ */
+// Extract executeApproval into a testable module
+const { executeApproval } = require('./lib/execution');
 
 const { monteCarloSimulation } = require('./lib/core');
 // coinbase client is optional — only used when API keys are provided
@@ -424,6 +566,33 @@ cron.schedule(LOOP_INTERVAL, async () => {
     console.error('Scheduled mainLoop failed:', err && err.message ? err.message : err);
   }
 });
+
+  // Daily report at 08:00 UTC
+  cron.schedule('0 8 * * *', async () => {
+    try {
+      const portfolio = await getPortfolioSnapshot();
+      // Monte Carlo mean
+      const mc = monteCarloSimulation(portfolio, Math.min(MONTE_CARLO_SIMULATIONS, 500), 30);
+      const mean = mc.reduce((a, b) => a + b, 0) / mc.length;
+      const news = await fetchNewsSentiment(Object.keys(portfolio || {}));
+      const report = await generateDailyReport(db, portfolio, { monteCarloMean: mean, sentiment: news, summary: 'Daily automated report' });
+      await sendAdvisoryMessage(`Daily report generated: ${report.createdAt.toISOString()} — Monte Carlo mean $${mean.toFixed(2)}`);
+    } catch (e) {
+      console.error('Daily report failed:', e && e.message ? e.message : e);
+    }
+  });
+
+  // Retrain reinforcement policy daily at 03:00 UTC
+  cron.schedule('0 3 * * *', async () => {
+    try {
+      if (!db) return;
+      const out = await trainReinforcement(db);
+      console.log('Daily reinforcement training result:', out);
+      await db.collection('training_runs').insertOne({ result: out, timestamp: new Date() });
+    } catch (e) {
+      console.error('Daily training failed:', e && e.message ? e.message : e);
+    }
+  });
 
 // ============ DISCORD INTERACTION ============
 client.on('messageCreate', async message => {
@@ -709,6 +878,22 @@ async function start() {
     server.on('error', (err) => console.error('Webhook server error:', err && err.message ? err.message : err));
   } catch (err) {
     console.warn('Could not start webhook server:', err && err.message ? err.message : err);
+  }
+
+  // Ensure kill-switch collection exists
+  if (db) {
+    try {
+      await db.collection('kill_switch').createIndex({ createdAt: 1 });
+    } catch (e) {
+      /* ignore */
+    }
+  }
+  // Serve minimal static dashboard
+  try {
+    app.use('/web', express.static(require('path').resolve(__dirname, 'web')));
+    console.log('Static dashboard available at /web');
+  } catch (e) {
+    console.warn('Failed to mount static dashboard:', e && e.message ? e.message : e);
   }
 
   console.log('Bot startup complete. Scheduler is active. (DRY_RUN=' + DRY_RUN + ')');

@@ -1,0 +1,74 @@
+name: Railway health monitor
+
+on:
+  schedule:
+    # every 5 minutes
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  check-health:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check service health
+        uses: actions/github-script@v6
+        env:
+          SERVICE_URL: ${{ secrets.RAILWAY_SERVICE_URL }}
+          DISCORD_MONITOR_WEBHOOK: ${{ secrets.DISCORD_MONITOR_WEBHOOK }}
+        with:
+          script: |
+            const core = require('@actions/core');
+            const github = require('@actions/github');
+            const serviceUrl = process.env.SERVICE_URL;
+            if (!serviceUrl) {
+              core.setFailed('RAILWAY_SERVICE_URL secret is not set');
+              return;
+            }
+            const healthUrl = serviceUrl.replace(/\/$/, '') + '/health';
+            core.info(`Checking ${healthUrl}`);
+            try {
+              const res = await fetch(healthUrl, { method: 'GET' });
+              if (!res.ok) {
+                core.warning(`Health endpoint returned HTTP ${res.status}`);
+                // create an issue
+                await github.rest.issues.create({
+                  ...github.context.repo,
+                  title: `Railway health check failed: HTTP ${res.status}`,
+                  body: `Health endpoint ${healthUrl} returned status ${res.status}.`,
+                });
+                // optional Discord notify
+                if (process.env.DISCORD_MONITOR_WEBHOOK) {
+                  await fetch(process.env.DISCORD_MONITOR_WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: `:rotating_light: Railway health check failed: HTTP ${res.status} for ${healthUrl}` }) });
+                }
+                core.setFailed('health check failed');
+                return;
+              }
+              const data = await res.json();
+              core.info(`Health response: ${JSON.stringify(data)}`);
+              if (data.status !== 'ok' || data.db !== true) {
+                await github.rest.issues.create({
+                  ...github.context.repo,
+                  title: `Railway unhealthy: ${JSON.stringify(data)}`,
+                  body: `Health endpoint returned unexpected payload:\n\n${JSON.stringify(data, null, 2)}`,
+                });
+                if (process.env.DISCORD_MONITOR_WEBHOOK) {
+                  await fetch(process.env.DISCORD_MONITOR_WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: `:rotating_light: Railway unhealthy: ${JSON.stringify(data)}` }) });
+                }
+                core.setFailed('health payload indicates unhealthy');
+                return;
+              }
+              core.info('Service healthy');
+            } catch (err) {
+              core.error(err);
+              await github.rest.issues.create({
+                ...github.context.repo,
+                title: `Railway health check error: ${err && err.message}`,
+                body: `Error while checking health endpoint ${healthUrl}:\n\n${err && err.stack ? err.stack : err}`,
+              }).catch(e => core.warning('Failed creating issue: ' + e));
+              if (process.env.DISCORD_MONITOR_WEBHOOK) {
+                try {
+                  await fetch(process.env.DISCORD_MONITOR_WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: `:rotating_light: Railway health check error: ${err && err.message}` }) });
+                } catch (e) { core.warning('Failed to send Discord webhook: ' + e); }
+              }
+              core.setFailed('health check exception');
+            }

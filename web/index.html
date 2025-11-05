@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>CoinRuler Dashboard (Minimal)</title>
+  <style>body{font-family:Arial,Helvetica,sans-serif;padding:20px}pre{background:#f6f6f6;padding:10px;border-radius:6px}</style>
+  <script>
+    async function refresh(){
+      const res = await fetch('/dashboard');
+      const data = await res.json();
+      document.getElementById('snapshot').textContent = JSON.stringify(data.snapshot, null, 2);
+      document.getElementById('reports').textContent = JSON.stringify(data.recentReports, null, 2);
+    }
+    window.onload = refresh;
+  </script>
+</head>
+<body>
+  <h1>CoinRuler Dashboard</h1>
+  <p>Minimal dashboard showing the latest snapshot and recent reports.</p>
+  <h2>Latest Snapshot</h2>
+  <pre id="snapshot">Loading...</pre>
+  <h2>Recent Reports</h2>
+  <pre id="reports">Loading...</pre>
+  <p><button onclick="refresh()">Refresh</button></p>
+</body>
+</html>

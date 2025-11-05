@@ -1,0 +1,29 @@
+version: '3.9'
+services:
+  mongo:
+    image: mongo:6
+    ports:
+      - '27017:27017'
+    healthcheck:
+      test: ['CMD', 'mongo', '--eval', 'db.adminCommand("ping")']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  api:
+    build: ./apps/api
+    environment:
+      - PORT=3001
+      - MONGODB_URI=mongodb://mongo:27017
+      - DATABASE_NAME=coinruler
+    ports:
+      - '3001:3001'
+    depends_on:
+      - mongo
+  bot:
+    build: ./apps/bot
+    environment:
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - API_BASE_URL=http://api:3001
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - api

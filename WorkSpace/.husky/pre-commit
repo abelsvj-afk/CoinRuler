@@ -1,0 +1,13 @@
+#!/bin/sh
+. "$(dirname "$0")/_/husky.sh"
+
+# Block committing .env files
+if git diff --cached --name-only | grep -E '(^|/)\.env(\..*)?$' >/dev/null; then
+  echo "\033[31mError: Committing .env files is blocked. Remove them from the commit.\033[0m"
+  exit 1
+fi
+
+# Warn on large bot_features.json changes
+if git diff --cached --numstat | awk '$3=="bot_features.json" {print $1+$2}' | awk '$1>200 {exit 0} END {exit 1}'; then
+  echo "\033[33mWarning: Large change detected in bot_features.json (>200 lines). Ensure this is intentional.\033[0m"
+fi
