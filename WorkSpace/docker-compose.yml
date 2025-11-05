@@ -4,26 +4,103 @@ services:
     image: mongo:6
     ports:
       - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=coinruler
     healthcheck:
-      test: ['CMD', 'mongo', '--eval', 'db.adminCommand("ping")']
+      test: ['CMD', 'mongosh', '--eval', 'db.adminCommand("ping")']
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - coinruler-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - coinruler-net
+
   api:
-    build: ./apps/api
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
     environment:
       - PORT=3001
       - MONGODB_URI=mongodb://mongo:27017
       - DATABASE_NAME=coinruler
+      - REDIS_URL=redis://redis:6379
+      - NODE_ENV=production
     ports:
       - '3001:3001'
     depends_on:
-      - mongo
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:3001/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - coinruler-net
+
   bot:
-    build: ./apps/bot
+    build:
+      context: ./apps/bot
+      dockerfile: Dockerfile
     environment:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
       - API_BASE_URL=http://api:3001
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-3.5-turbo}
+      - OWNER_ID=${OWNER_ID}
+      - NODE_ENV=production
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - coinruler-net
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+      - NODE_ENV=production
+    ports:
+      - '3000:3000'
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:3000']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - coinruler-net
+
+volumes:
+  mongo-data:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  coinruler-net:
+    driver: bridge
