@@ -23,6 +23,27 @@ DRY_RUN=true
 ROTATION_SCHEDULER_ENABLED=true
 ```
 
+### Web Dashboard (optional, owner-only)
+
+If you want a simple private web UI instead of Discord, add these too:
+
+```
+WEB_USERNAME=choose_a_username
+WEB_PASSWORD=choose_a_strong_password
+# For the web app to reach the API:
+API_BASE=https://<your-railway-api-service-url>
+# Or client-side fallback during local dev
+NEXT_PUBLIC_API_BASE=http://localhost:3001
+```
+
+Then create a separate Railway service for the web app pointing to `WorkSpace/apps/web`:
+
+1. Add a new service → Deploy from GitHub → pick this repo
+2. In Service Settings, set the root directory to `WorkSpace/apps/web`
+3. Build command: `npm install && npm run build`
+4. Start command: `npm run start`
+5. Add the web variables above in this service
+
 ### 2. Deploy
 
 Railway will automatically:
@@ -93,10 +114,10 @@ node register-commands.js
 To test locally before Railway deployment:
 
 ```bash
-# Copy environment variables
-cp .env WorkSpace/apps/bot/.env
+# Copy environment variables (PowerShell)
+Copy-Item .env WorkSpace/apps/bot/.env -Force
 
-# Build
+# Build monorepo
 cd WorkSpace
 npm install
 npm run build
@@ -104,6 +125,10 @@ npm run build
 # Run bot
 cd apps/bot
 npm run dev
+
+# (Optional) Run the web dashboard locally (PowerShell)
+cd ../../apps/web
+$env:WEB_USERNAME="owner"; $env:WEB_PASSWORD="pass"; $env:NEXT_PUBLIC_API_BASE="http://localhost:3001"; npm run dev
 ```
 
 ## Environment Variables Reference

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { ToastContainer } from './components/Toast';
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -25,11 +26,14 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}> 
+        <ToastContainer />
         <header className="w-full border-b">
           <nav className="max-w-5xl mx-auto p-4 flex gap-4 text-sm">
             <a href="/" className="font-semibold">CoinRuler</a>
             <a href="/dashboard" className="underline">Dashboard</a>
+            <a href="/portfolio" className="underline">Portfolio</a>
             <a href="/approvals" className="underline">Approvals</a>
+            <a href="/alerts" className="underline">Alerts</a>
             <a href="/rotation" className="underline">Rotation</a>
             <a href="/commands" className="underline">Commands</a>
             <a href="/chat" className="underline">Chat</a>
