@@ -20,11 +20,210 @@ const client = new Client({
 
 const apiBase = process.env.API_BASE_URL || 'http://localhost:3001';
 
-client.on('ready', () => console.log(`Bot logged in as ${client.user?.tag}`));
+client.on('ready', () => {
+  console.log(`Bot logged in as ${client.user?.tag}`);
+  console.log(`Bot is in ${client.guilds.cache.size} server(s):`);
+  client.guilds.cache.forEach(guild => {
+    console.log(`  - ${guild.name} (ID: ${guild.id})`);
+  });
+  console.log(`\n✅ Slash commands registered! Try typing / in Discord to see them.`);
+  console.log(`\nBot invite URL: https://discord.com/api/oauth2/authorize?client_id=${client.user?.id}&permissions=8&scope=bot`);
+});
+
+// Handle slash commands
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const { commandName } = interaction;
+
+  try {
+    if (commandName === 'ping') {
+      await interaction.reply('Pong! 🏓');
+      return;
+    }
+
+    if (commandName === 'status') {
+      try {
+        const { data } = await axios.get(`${apiBase}/status`);
+        await interaction.reply('Status: ' + JSON.stringify(data));
+      } catch (e: any) {
+        await interaction.reply('Error fetching status: ' + (e?.message || 'unknown'));
+      }
+      return;
+    }
+
+    if (commandName === 'approvals') {
+      try {
+        const { data } = await axios.get(`${apiBase}/approvals`);
+        if (!data || data.length === 0) {
+          await interaction.reply('No pending approvals.');
+          return;
+        }
+        const lines = data.map((a: any, i: number) => 
+          `${i + 1}. [${a._id}] ${a.title} - ${a.coin} ${a.amount}`
+        );
+        await interaction.reply('Pending approvals:\n' + lines.join('\n'));
+      } catch (e: any) {
+        await interaction.reply('Error fetching approvals: ' + (e?.message || 'unknown'));
+      }
+      return;
+    }
+
+    if (commandName === 'approve') {
+      if (OWNER_ID && interaction.user.id !== OWNER_ID) {
+        await interaction.reply('❌ Unauthorized');
+        return;
+      }
+      const id = interaction.options.getString('id', true);
+      try {
+        await axios.patch(`${apiBase}/approvals/${id}`, { 
+          status: 'approved', 
+          actedBy: interaction.user.id 
+        });
+        await interaction.reply(`✅ Approval ${id} approved.`);
+      } catch (e: any) {
+        await interaction.reply('❌ Error approving: ' + (e?.message || 'unknown'));
+      }
+      return;
+    }
+
+    if (commandName === 'decline') {
+      if (OWNER_ID && interaction.user.id !== OWNER_ID) {
+        await interaction.reply('❌ Unauthorized');
+        return;
+      }
+      const id = interaction.options.getString('id', true);
+      try {
+        await axios.patch(`${apiBase}/approvals/${id}`, { 
+          status: 'declined', 
+          actedBy: interaction.user.id 
+        });
+        await interaction.reply(`✅ Approval ${id} declined.`);
+      } catch (e: any) {
+        await interaction.reply('❌ Error declining: ' + (e?.message || 'unknown'));
+      }
+      return;
+    }
+
+    if (commandName === 'panic') {
+      if (OWNER_ID && interaction.user.id !== OWNER_ID) {
+        await interaction.reply('❌ Unauthorized');
+        return;
+      }
+      try {
+        await axios.post(`${apiBase}/kill-switch`, { 
+          enabled: true, 
+          reason: 'Panic triggered by user',
+          setBy: interaction.user.id 
+        });
+        await interaction.reply('🚨 PANIC MODE ACTIVATED - All trading stopped');
+      } catch (e: any) {
+        await interaction.reply('❌ Error activating panic: ' + (e?.message || 'unknown'));
+      }
+      return;
+    }
+
+    if (commandName === 'resume') {
+      if (OWNER_ID && interaction.user.id !== OWNER_ID) {
+        await interaction.reply('❌ Unauthorized');
+        return;
+      }
+      try {
+        await axios.post(`${apiBase}/kill-switch`, { 
+          enabled: false, 
+          reason: 'Resumed by user',
+          setBy: interaction.user.id 
+        });
+        await interaction.reply('✅ Trading resumed');
+      } catch (e: any) {
+        await interaction.reply('❌ Error resuming: ' + (e?.message || 'unknown'));
+      }
+      return;
+    }
+
+    if (commandName === 'advice') {
+      const prompt = interaction.options.getString('prompt') || 'Give me crypto trading advice.';
+      await interaction.deferReply();
+      try {
+        const reply = await getLLMAdvice([
+          { role: 'system', content: 'You are an expert crypto trading advisor. Be safe, compliant, and actionable.' },
+          { role: 'user', content: prompt }
+        ], { user: interaction.user.id });
+        await interaction.editReply(reply);
+      } catch (e: any) {
+        await interaction.editReply('❌ LLM error: ' + (e?.message || 'unknown'));
+      }
+      return;
+    }
+
+    if (commandName === 'rotation-status') {
+      if (OWNER_ID && interaction.user.id !== OWNER_ID) {
+        await interaction.reply('❌ Unauthorized');
+        return;
+      }
+      try {
+        const { data } = await axios.get(`${apiBase}/rotation/status`);
+        const lines = data.map((item: any) =>
+          `${item.service}: ${item.enabled ? '✅ Enabled' : '❌ Disabled'} | Last: ${item.lastRotation ? new Date(item.lastRotation).toLocaleDateString() : 'Never'} | Due: ${item.isDue ? '⚠️ YES' : '✅ No'}`
+        );
+        await interaction.reply('**Credential Rotation Status**\n' + lines.join('\n'));
+      } catch (e: any) {
+        await interaction.reply('❌ Error fetching rotation status: ' + (e?.message || 'unknown'));
+      }
+      return;
+    }
+
+    if (commandName === 'rotate') {
+      if (OWNER_ID && interaction.user.id !== OWNER_ID) {
+        await interaction.reply('❌ Unauthorized');
+        return;
+      }
+      const service = interaction.options.getString('service', true);
+      await interaction.deferReply();
+      try {
+        const { data } = await axios.post(`${apiBase}/rotation/rotate/${service}`);
+        if (data.success) {
+          await interaction.editReply(`✅ Rotation successful for ${service}\nNew Key: ${data.newKeyId}\nGrace period ends: ${new Date(data.gracePeriodEnd).toLocaleString()}`);
+        } else {
+          await interaction.editReply(`❌ Rotation failed for ${service}: ${data.error}`);
+        }
+      } catch (e: any) {
+        await interaction.editReply('❌ Error rotating credentials: ' + (e?.message || 'unknown'));
+      }
+      return;
+    }
+
+    if (commandName === 'rotation-check') {
+      if (OWNER_ID && interaction.user.id !== OWNER_ID) {
+        await interaction.reply('❌ Unauthorized');
+        return;
+      }
+      await interaction.deferReply();
+      try {
+        await axios.post(`${apiBase}/rotation/scheduler/check`);
+        await interaction.editReply('✅ Rotation check completed. Check logs for details.');
+      } catch (e: any) {
+        await interaction.editReply('❌ Error running rotation check: ' + (e?.message || 'unknown'));
+      }
+      return;
+    }
+
+  } catch (error: any) {
+    console.error('Error handling interaction:', error);
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp('❌ An error occurred');
+    } else {
+      await interaction.reply('❌ An error occurred');
+    }
+  }
+});
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   const content = message.content.trim();
+  
+  const channelName = 'name' in message.channel ? message.channel.name : 'DM';
+  console.log(`[Message] ${message.author.tag} in #${channelName}: ${content}`);
   
   // /ping
   if (content === '/ping') {
