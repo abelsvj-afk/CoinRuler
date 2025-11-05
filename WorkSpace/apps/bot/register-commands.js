@@ -3,6 +3,7 @@ const { REST, Routes, SlashCommandBuilder } = require('discord.js');
 
 const token = process.env.DISCORD_BOT_TOKEN;
 const clientId = '1435501762516615208'; // Your bot's client ID
+const guildId = '1419515374646595616'; // Your server ID (ASCEND's server)
 
 const commands = [
   new SlashCommandBuilder()
@@ -80,16 +81,18 @@ const rest = new REST({ version: '10' }).setToken(token);
 
 (async () => {
   try {
-    console.log('Started refreshing application (/) commands.');
+    console.log('Started refreshing guild-specific (/) commands.');
 
+    // Register commands for your specific server only (instant updates)
     await rest.put(
-      Routes.applicationCommands(clientId),
+      Routes.applicationGuildCommands(clientId, guildId),
       { body: commands },
     );
 
-    console.log('Successfully registered application (/) commands!');
-    console.log(`Registered ${commands.length} commands:`);
+    console.log('Successfully registered guild-specific (/) commands!');
+    console.log(`Registered ${commands.length} commands in ASCEND's server:`);
     commands.forEach(cmd => console.log(`  - /${cmd.name}`));
+    console.log('\n✅ Commands will show up ONLY in your server and update instantly!');
   } catch (error) {
     console.error(error);
   }
