@@ -3,6 +3,7 @@ import Credentials from 'next-auth/providers/credentials';
 import Discord from 'next-auth/providers/discord';
 
 export const authConfig = {
+  trustHost: true, // Allow localhost and production URLs
   pages: {
     signIn: '/login',
   },
