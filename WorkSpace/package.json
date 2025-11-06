@@ -9,13 +9,14 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w packages/llm && npm run build -w packages/shared && npm run build -w packages/analytics && npm run build -w packages/security && npm run build -w packages/alerting && npm run build -w apps/api && npm run build -w apps/bot",
+    "build": "npm run build -w packages/llm && npm run build -w packages/shared && npm run build -w packages/analytics && npm run build -w packages/security && npm run build -w packages/alerting && npm run build -w packages/workflows && npm run build -w apps/api && npm run build -w apps/bot",
     "dev": "node -e \"console.log('Use npm run dev -w apps/api or -w apps/bot')\"",
     "lint": "eslint . --ext .ts,.tsx || echo 'Lint check complete'",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\" || echo 'Format complete'",
-    "prepare": "husky install"
+    "prepare": "husky install",
+    "workflows:run": "npm run build -w packages/workflows && node packages/workflows/dist/cli/run-workflow.js"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",

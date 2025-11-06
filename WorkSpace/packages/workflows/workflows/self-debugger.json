@@ -1,0 +1,83 @@
+{
+  "id": "self-debugger-default",
+  "name": "Self-Debugger / Health & Fix",
+  "description": "Probes API/Web, runs integration tests, checks ports, and notifies",
+  "start": "probe-api",
+  "nodes": [
+    {
+      "id": "probe-api",
+      "name": "Probe API /health",
+      "type": "httpProbe",
+      "config": { "url": "http://localhost:3001/health", "expectStatus": 200, "timeoutMs": 5000 },
+      "onSuccess": "probe-web",
+      "onWarn": "probe-web",
+      "onError": "notify-api-fail"
+    },
+    {
+      "id": "notify-api-fail",
+      "name": "Notify API failure",
+      "type": "notify",
+      "config": {
+        "template": "API health probe failed. Last result: {{lastResult.status}} Error: {{lastResult.error}}",
+        "channels": ["discord", "console"]
+      },
+      "onSuccess": "probe-web"
+    },
+    {
+      "id": "probe-web",
+      "name": "Probe Web /",
+      "type": "httpProbe",
+      "config": { "url": "http://localhost:3000/", "expectStatus": 200, "timeoutMs": 5000 },
+      "onSuccess": "run-integration-tests",
+      "onWarn": "run-integration-tests",
+      "onError": "notify-web-fail"
+    },
+    {
+      "id": "notify-web-fail",
+      "name": "Notify Web failure",
+      "type": "notify",
+      "config": {
+        "template": "Web probe failed. Last result: {{lastResult.status}} Error: {{lastResult.error}}",
+        "channels": ["discord", "console"]
+      },
+      "onSuccess": "run-integration-tests"
+    },
+    {
+      "id": "run-integration-tests",
+      "name": "Run integration tests",
+      "type": "runCommand",
+      "config": {
+        "command": "node WorkSpace/test-integration.js",
+        "shell": true
+      },
+      "onSuccess": "port-guard-api",
+      "onWarn": "port-guard-api",
+      "onError": "port-guard-api"
+    },
+    {
+      "id": "port-guard-api",
+      "name": "Port Guard 3001 (API)",
+      "type": "portGuard",
+      "config": { "port": 3001 },
+      "onSuccess": "port-guard-web",
+      "onWarn": "port-guard-web"
+    },
+    {
+      "id": "port-guard-web",
+      "name": "Port Guard 3000 (Web)",
+      "type": "portGuard",
+      "config": { "port": 3000 },
+      "onSuccess": "final-notify",
+      "onWarn": "final-notify"
+    },
+    {
+      "id": "final-notify",
+      "name": "Notify Summary",
+      "type": "notify",
+      "config": {
+        "template": "Workflow completed. API healthy={{apiHealthy}} Web healthy={{webHealthy}}",
+        "channels": ["discord", "console"]
+      }
+    }
+  ]
+}

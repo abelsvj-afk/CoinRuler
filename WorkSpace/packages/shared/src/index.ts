@@ -4,6 +4,7 @@ export type Status = { status: string; ts: string };
 export * from './types';
 export * from './monteCarlo';
 export * from './priceFeed';
+export * from './selfHealing';
 
 export function formatUSD(amount: number): string {
   return `$${amount.toFixed(2)}`;

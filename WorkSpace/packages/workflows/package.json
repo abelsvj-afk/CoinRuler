@@ -1,0 +1,21 @@
+{
+  "name": "@coinruler/workflows",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "coinruler-workflow": "dist/cli/run-workflow.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node dist/cli/run-workflow.js --watch || echo 'Build first: npm run build -w packages/workflows'",
+    "start": "node dist/cli/run-workflow.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
