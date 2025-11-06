@@ -1,54 +1,27 @@
-import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
+import { auth } from './auth';
 
-// Auth middleware: supports both Basic Auth (temporary) and Discord OAuth (preferred)
-export function middleware(req: NextRequest) {
-  const { pathname } = req.nextUrl;
+export default auth((req) => {
+  const isLoggedIn = !!req.auth;
+  const isOnLoginPage = req.nextUrl.pathname.startsWith('/login');
+  const isAuthCallback = req.nextUrl.pathname.startsWith('/auth/callback');
+  const isApiRoute = req.nextUrl.pathname.startsWith('/api/auth');
 
-  // TEMPORARY: Allow all routes for testing
-  // TODO: Re-enable auth after testing
-  return NextResponse.next();
-
-  // Allow public routes (login, OAuth callback, API routes)
-  if (pathname.startsWith('/login') || pathname.startsWith('/auth/callback') || pathname.startsWith('/api/auth')) {
-    return NextResponse.next();
+  // Allow auth routes
+  if (isAuthCallback || isApiRoute) {
+    return;
   }
 
-  // Check for Discord session cookie (preferred)
-  const discordUserId = req.cookies.get('discord_user_id')?.value;
-  const OWNER_ID = process.env.OWNER_ID || '';
-  
-  if (discordUserId && OWNER_ID && discordUserId === OWNER_ID) {
-    // Authenticated via Discord OAuth
-    return NextResponse.next();
+  // Redirect to login if not authenticated
+  if (!isLoggedIn && !isOnLoginPage) {
+    return Response.redirect(new URL('/login', req.nextUrl));
   }
 
-  // Fallback to Basic Auth (for backward compatibility)
-  const username = process.env.WEB_USERNAME || '';
-  const password = process.env.WEB_PASSWORD || '';
-
-  if (username && password) {
-    const authHeader = req.headers.get('authorization') ?? '';
-    if (authHeader.startsWith('Basic ')) {
-      try {
-        const b64 = authHeader.split(' ')[1] || '';
-        const decoded = Buffer.from(b64, 'base64').toString('utf8');
-        const [user, pass] = decoded.split(':');
-        if (user === username && pass === password) {
-          return NextResponse.next();
-        }
-      } catch (_) {
-        // fall through to redirect
-      }
-    }
+  // Redirect to home if already logged in and on login page
+  if (isLoggedIn && isOnLoginPage) {
+    return Response.redirect(new URL('/', req.nextUrl));
   }
-
-  // Not authenticated: redirect to login
-  return NextResponse.redirect(new URL('/login', req.url));
-}
+});
 
 export const config = {
-  matcher: [
-    '/((?!_next|api|favicon.ico).*)',
-  ],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 };

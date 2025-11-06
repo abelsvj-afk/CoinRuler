@@ -1,31 +1,43 @@
 "use client";
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState } from 'react';
+import { signIn } from 'next-auth/react';
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
-  const router = useRouter();
+  const [showPassword, setShowPassword] = useState(false);
+  const [password, setPassword] = useState('');
 
-  function handleDiscordLogin() {
+  async function handleDiscordLogin() {
     setLoading(true);
-    const clientId = process.env.NEXT_PUBLIC_DISCORD_CLIENT_ID;
-    const redirectUri = encodeURIComponent(process.env.NEXT_PUBLIC_DISCORD_REDIRECT_URI || 'http://localhost:3000/auth/callback');
-    const scope = encodeURIComponent('identify');
-    
-    window.location.href = `https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}`;
+    await signIn('discord', { callbackUrl: '/' });
+  }
+
+  async function handlePasswordLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await signIn('credentials', {
+        password,
+        redirect: true,
+        callbackUrl: '/'
+      });
+    } catch (error) {
+      setLoading(false);
+      alert('Invalid password');
+    }
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500">
-      <div className="bg-white rounded-lg shadow-2xl p-8 max-w-md w-full">
+    <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#0a1628] via-[#1a3b71] to-[#244d8a]">
+      <div className="bg-white/10 backdrop-blur-md rounded-2xl shadow-2xl p-8 max-w-md w-full border border-white/20">
         <div className="text-center">
-          <h1 className="text-3xl font-bold mb-2">CoinRuler</h1>
-          <p className="text-gray-600 mb-8">Owner-Only Trading Dashboard</p>
+          <h1 className="text-4xl font-bold mb-2 bg-gradient-to-r from-white to-[#FFB800] bg-clip-text text-transparent">CoinRuler</h1>
+          <p className="text-white/60 mb-8">Owner-Only Trading Dashboard</p>
           
           <button
             onClick={handleDiscordLogin}
             disabled={loading}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 px-6 rounded-lg flex items-center justify-center gap-3 transition-colors disabled:opacity-50"
+            className="w-full bg-[#5865F2] hover:bg-[#4752C4] text-white font-semibold py-3 px-6 rounded-xl flex items-center justify-center gap-3 transition-all disabled:opacity-50 mb-4"
           >
             {loading ? (
               <span>Redirecting...</span>
@@ -39,9 +51,45 @@ export default function LoginPage() {
             )}
           </button>
 
-          <p className="text-sm text-gray-500 mt-6">
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-white/20"></div>
+            </div>
+            <div className="relative flex justify-center text-sm">
+              <span className="px-2 bg-transparent text-white/60">or</span>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setShowPassword(!showPassword)}
+            className="text-sm text-white/60 hover:text-white mb-4 underline"
+          >
+            {showPassword ? 'Hide' : 'Use'} password login
+          </button>
+
+          {showPassword && (
+            <form onSubmit={handlePasswordLogin} className="space-y-4">
+              <input
+                type="password"
+                placeholder="Owner password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full bg-white/10 border border-white/20 rounded-lg px-4 py-3 text-white placeholder-white/40 focus:outline-none focus:ring-2 focus:ring-[#FFB800]"
+                required
+              />
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full bg-gradient-to-r from-[#FFB800] to-[#FFC82C] text-[#0a1628] font-semibold py-3 px-6 rounded-xl hover:scale-105 transition-all disabled:opacity-50"
+              >
+                {loading ? 'Logging in...' : 'Login'}
+              </button>
+            </form>
+          )}
+
+          <p className="text-sm text-white/40 mt-8">
             🔒 Owner verification required<br />
-            Only authorized Discord account can access
+            Only authorized accounts can access this dashboard
           </p>
         </div>
       </div>
