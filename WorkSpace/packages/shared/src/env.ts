@@ -11,7 +11,8 @@ const EnvSchema = z.object({
   NODE_ENV: z.string().default('development'),
   MONGODB_URI: z.string().min(1, 'MONGODB_URI required'),
   DATABASE_NAME: z.string().min(1, 'DATABASE_NAME required'),
-  DISCORD_BOT_TOKEN: z.string().min(1, 'DISCORD_BOT_TOKEN required'),
+  // Discord token now optional: bot runs in disabled mode if absent
+  DISCORD_BOT_TOKEN: z.string().optional(),
   // Coinbase keys now optional: if absent, integration runs in disabled mode
   COINBASE_API_KEY: z.string().optional(),
   COINBASE_API_SECRET: z.string().optional(),
@@ -67,4 +68,9 @@ export function getEnv(): Env {
 export function hasCoinbaseCredentials(): boolean {
   const env = validateEnv();
   return !!(env.COINBASE_API_KEY && env.COINBASE_API_SECRET);
+}
+
+export function hasDiscordToken(): boolean {
+  const env = validateEnv();
+  return !!env.DISCORD_BOT_TOKEN;
 }

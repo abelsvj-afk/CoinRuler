@@ -2,51 +2,75 @@ import 'dotenv/config';
 import { Client, GatewayIntentBits } from 'discord.js';
 import axios from 'axios';
 import { getLLMAdvice } from '@coinruler/llm';
-import { validateEnv, getLogger } from '@coinruler/shared';
+import { validateEnv, getLogger, hasDiscordToken } from '@coinruler/shared';
 
-try {
-  validateEnv();
-  getLogger({ svc: 'bot' }).info('Bot environment validated');
-} catch (e) {
-  getLogger({ svc: 'bot' }).error('Invalid bot environment configuration.');
-  process.exit(1);
-}
-
-const token = process.env.DISCORD_BOT_TOKEN;
-const OWNER_ID = process.env.OWNER_ID;
-if (!token) {
-  console.error('Missing DISCORD_BOT_TOKEN in env');
-  process.exit(1);
-}
-
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
-
-const apiBase = process.env.API_BASE_URL || process.env.API_BASE || 'http://localhost:3001';
-
-client.on('ready', () => {
-  const log = getLogger({ svc: 'bot' });
-  log.info(`Bot logged in as ${client.user?.tag}`);
-  log.info(`Bot is in ${client.guilds.cache.size} server(s):`);
-  client.guilds.cache.forEach(guild => {
-    log.info(`  - ${guild.name} (ID: ${guild.id})`);
-  });
-  log.info(`Slash commands registered! Try typing / in Discord to see them.`);
-  log.info(`Bot invite URL: https://discord.com/api/oauth2/authorize?client_id=${client.user?.id}&permissions=8&scope=bot`);
-});
-
-// Handle slash commands
-client.on('interactionCreate', async (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-
-  const { commandName } = interaction;
-
+async function startBot() {
   try {
+    validateEnv();
+    getLogger({ svc: 'bot' }).info('Bot environment validated');
+  } catch (e) {
+    getLogger({ svc: 'bot' }).error('Invalid bot environment configuration.');
+    process.exit(1);
+  }
+
+  const token = process.env.DISCORD_BOT_TOKEN;
+  const OWNER_ID = process.env.OWNER_ID;
+
+  // Graceful fallback: if no token, run in disabled mode
+  if (!token || !hasDiscordToken()) {
+    const log = getLogger({ svc: 'bot' });
+    log.warn('⚠️  DISCORD_BOT_TOKEN not configured - Bot running in DISABLED mode');
+    log.warn('To enable Discord integration:');
+    log.warn('  1. Get your bot token from https://discord.com/developers/applications');
+    log.warn('  2. Set DISCORD_BOT_TOKEN in Railway environment variables');
+    log.warn('  3. Redeploy the bot service');
+    log.info('Bot service started (disabled mode) - waiting for configuration...');
+    
+    // Keep process alive but do nothing
+    setInterval(() => {
+      // Heartbeat to prevent Railway from thinking process crashed
+    }, 30000);
+    
+    // Listen for shutdown signals
+    const shutdown = (signal: string) => {
+      getLogger({ svc: 'bot' }).info(`${signal} received. Shutting down disabled bot...`);
+      process.exit(0);
+    };
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    
+    // Keep waiting
+    return;
+  }
+
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+    ],
+  });
+
+  const apiBase = process.env.API_BASE_URL || process.env.API_BASE || 'http://localhost:3001';
+
+  client.on('ready', () => {
+    const log = getLogger({ svc: 'bot' });
+    log.info(`✅ Bot logged in as ${client.user?.tag}`);
+    log.info(`Bot is in ${client.guilds.cache.size} server(s):`);
+    client.guilds.cache.forEach(guild => {
+      log.info(`  - ${guild.name} (ID: ${guild.id})`);
+    });
+    log.info(`Slash commands registered! Try typing / in Discord to see them.`);
+    log.info(`Bot invite URL: https://discord.com/api/oauth2/authorize?client_id=${client.user?.id}&permissions=8&scope=bot`);
+  });
+
+  // Handle slash commands
+  client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isChatInputCommand()) return;
+
+    const { commandName } = interaction;
+
+    try {
     if (commandName === 'ping') {
       await interaction.reply({ content: 'Pong! 🏓', ephemeral: true });
       return;
@@ -258,16 +282,14 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply('❌ An error occurred');
     }
   }
-});
+  });
 
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-  const content = message.content.trim();
-  
-  const channelName = 'name' in message.channel ? message.channel.name : 'DM';
-  getLogger({ svc: 'bot' }).info(`[Message] ${message.author.tag} in #${channelName}: ${content}`);
-  
-  // /ping
+  client.on('messageCreate', async (message) => {
+    if (message.author.bot) return;
+    const content = message.content.trim();
+    
+    const channelName = 'name' in message.channel ? message.channel.name : 'DM';
+    getLogger({ svc: 'bot' }).info(`[Message] ${message.author.tag} in #${channelName}: ${content}`);  // /ping
   if (content === '/ping') {
     await message.reply('pong');
     return;
@@ -462,15 +484,51 @@ client.on('messageCreate', async (message) => {
       await message.reply('LLM error: ' + (e?.message || 'unknown'));
     }
   }
+  });
+
+  // Login and handle errors gracefully
+  const log = getLogger({ svc: 'bot' });
+  log.info('Attempting Discord login...');
+
+  client.login(token).catch((err: any) => {
+    log.error({ err: err?.message || err }, '❌ Discord login failed');
+    log.error('Common causes:');
+    log.error('  - Invalid or expired DISCORD_BOT_TOKEN');
+    log.error('  - Token needs to be regenerated at https://discord.com/developers/applications');
+    log.error('  - Network connectivity issues');
+    log.error('Bot will retry connection automatically...');
+    
+    // Retry after 30 seconds instead of crashing
+    setTimeout(() => {
+      log.info('Retrying Discord connection...');
+      client.login(token).catch((retryErr: any) => {
+        log.error({ err: retryErr?.message }, 'Retry failed. Check token validity.');
+        process.exit(1);
+      });
+    }, 30000);
+  });
+
+  // Handle client errors
+  client.on('error', (err: Error) => {
+    log.error({ err: err.message }, 'Discord client error');
+  });
+
+  client.on('warn', (msg: string) => {
+    log.warn(msg);
+  });
+
+  // Graceful shutdown for Discord client
+  const shutdown = async (signal: string) => {
+    getLogger({ svc: 'bot' }).info(`\n${signal} received. Shutting down bot...`);
+    try { await client.destroy(); } catch {}
+    process.exit(0);
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+}
+
+// Start the bot
+startBot().catch((err) => {
+  getLogger({ svc: 'bot' }).error({ err }, 'Fatal bot startup error');
+  process.exit(1);
 });
-
-client.login(token);
-
-// Graceful shutdown for Discord client
-const shutdown = async (signal: string) => {
-  getLogger({ svc: 'bot' }).info(`\n${signal} received. Shutting down bot...`);
-  try { await client.destroy(); } catch {}
-  process.exit(0);
-};
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
