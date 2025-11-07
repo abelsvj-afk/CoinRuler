@@ -11,9 +11,14 @@ export function WelcomeModal() {
   const [dontShow, setDontShow] = useState(false);
 
   useEffect(() => {
-    // Show on first visit unless user opted out
+    // Show once per session unless user opted out permanently
     const optOut = localStorage.getItem("coinruler.welcome.optOut") === "1";
-    if (!optOut && data) setOpen(true);
+    const shownThisSession = sessionStorage.getItem("coinruler.welcome.shown") === "1";
+    
+    if (!optOut && !shownThisSession && data) {
+      setOpen(true);
+      sessionStorage.setItem("coinruler.welcome.shown", "1");
+    }
   }, [data]);
 
   const close = () => {
@@ -24,7 +29,7 @@ export function WelcomeModal() {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
       <div className="glass-strong max-w-lg w-full mx-4 rounded-2xl p-6 border border-white/10">
         <div className="text-sm text-white/60 mb-2">Welcome back</div>
         <h2 className="text-2xl font-bold mb-2">Hey {user?.name || 'Owner'}, I’m your CoinRuler assistant 👋</h2>

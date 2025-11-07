@@ -6,6 +6,8 @@ import { TrendingUp, AlertTriangle, DollarSign, Activity, Shield, Zap } from "lu
 import { Card, StatCard } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { getApiBase } from "./lib/api";
+import { useRouter } from "next/navigation";
+import { SSEStatus } from "./components/SSEStatus";
 
 type DashboardResponse = {
   portfolio: any;
@@ -14,21 +16,48 @@ type DashboardResponse = {
   reports: any[];
 };
 
+type HealthResponse = {
+  ok: boolean;
+  db: string;
+};
+
 export default function HomePage() {
   const [data, setData] = useState<DashboardResponse | null>(null);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState<string | null>(null);
   const apiBase = getApiBase();
+  const router = useRouter();
 
   useEffect(() => {
     let isMounted = true;
 
     const fetchData = async () => {
       try {
-        const res = await fetch(`${apiBase}/dashboard`, { cache: "no-store" });
-        const json: DashboardResponse = await res.json();
-        if (isMounted) setData(json);
-      } catch (e) {
+        const [healthRes, dashRes] = await Promise.all([
+          fetch(`${apiBase}/health`, { cache: "no-store" }),
+          fetch(`${apiBase}/dashboard`, { cache: "no-store" })
+        ]);
+        
+        if (!healthRes.ok || !dashRes.ok) {
+          throw new Error(`API responded with status ${healthRes.status}/${dashRes.status}`);
+        }
+
+        const [healthJson, dashJson] = await Promise.all([
+          healthRes.json(),
+          dashRes.json()
+        ]);
+
+        if (isMounted) {
+          setHealth(healthJson);
+          setData(dashJson);
+          setApiError(null);
+        }
+      } catch (e: any) {
         console.error("Failed to load dashboard:", e);
+        if (isMounted) {
+          setApiError(e.message || "Cannot connect to API");
+        }
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -55,6 +84,30 @@ export default function HomePage() {
     );
   }
 
+  if (apiError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-8">
+        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="glass-strong rounded-2xl p-8 max-w-md">
+          <div className="text-center">
+            <AlertTriangle className="w-16 h-16 text-red-400 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold mb-2">Cannot Connect to API</h2>
+            <p className="text-white/60 mb-4">{apiError}</p>
+            <div className="glass rounded-lg p-3 mb-4 text-left">
+              <div className="text-xs text-white/40 mb-2">API Base URL:</div>
+              <code className="text-sm text-[#FFB800]">{apiBase}</code>
+            </div>
+            <p className="text-xs text-white/40 mb-4">
+              Make sure your API is running and NEXT_PUBLIC_API_BASE is set correctly.
+            </p>
+            <Button variant="primary" onClick={() => window.location.reload()}>
+              Retry Connection
+            </Button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
   const portfolio = data?.portfolio || {};
   const approvals = data?.approvals || [];
   const killSwitch = data?.killSwitch || { enabled: false, reason: "" };
@@ -70,14 +123,19 @@ export default function HomePage() {
             <p className="text-white/60 text-lg">Autonomous Crypto Trading Platform</p>
           </div>
           <div className="flex gap-3">
-            <Button variant="ghost" size="sm">
-              <Activity className="w-4 h-4" />
-              Live
-            </Button>
-            <Button variant="secondary" size="sm">
-              <Shield className="w-4 h-4" />
-              Protected
-            </Button>
+            <div className="glass rounded-lg px-3 py-2 flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${health?.ok ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
+              <span className="text-sm">
+                API: {health?.ok ? 'UP' : 'DOWN'}
+              </span>
+            </div>
+            <div className="glass rounded-lg px-3 py-2 flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${health?.db === 'connected' ? 'bg-green-400 animate-pulse' : health?.db === 'degraded' ? 'bg-yellow-400' : 'bg-red-400'}`} />
+              <span className="text-sm">
+                DB: {health?.db || 'unknown'}
+              </span>
+            </div>
+            <SSEStatus />
           </div>
         </div>
 
@@ -202,10 +260,22 @@ export default function HomePage() {
           <div className="p-6">
             <h3 className="text-xl font-bold mb-4">Quick Actions</h3>
             <div className="flex flex-wrap gap-3">
-              <Button variant="primary"><TrendingUp className="w-4 h-4" />New Trade</Button>
-              <Button variant="secondary"><Activity className="w-4 h-4" />View Analytics</Button>
-              <Button variant="secondary"><Shield className="w-4 h-4" />Security Settings</Button>
-              <Button variant="ghost"><Zap className="w-4 h-4" />Run Simulation</Button>
+              <Button variant="primary" onClick={() => router.push('/approvals')}>
+                <TrendingUp className="w-4 h-4" />
+                View Approvals
+              </Button>
+              <Button variant="secondary" onClick={() => router.push('/dashboard')}>
+                <Activity className="w-4 h-4" />
+                Full Dashboard
+              </Button>
+              <Button variant="secondary" onClick={() => router.push('/alerts')}>
+                <Shield className="w-4 h-4" />
+                View Alerts
+              </Button>
+              <Button variant="ghost" onClick={() => router.push('/commands')}>
+                <Zap className="w-4 h-4" />
+                Commands
+              </Button>
             </div>
           </div>
         </Card>
