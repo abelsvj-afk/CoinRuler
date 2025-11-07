@@ -1,30 +1,27 @@
-# Ignore everything except the web app
-/*
-!/WorkSpace
-/WorkSpace/*
-!/WorkSpace/apps
-/WorkSpace/apps/*
-!/WorkSpace/apps/web
-
-# Node modules
-node_modules
-**/node_modules
+# Vercel ignore tuned: allow monorepo metadata for dependency resolution.
+# Only exclude large build artifacts and local environment files.
 
 # Build outputs
 dist
 build
-.next
 out
 
 # Logs
 *.log
 npm-debug.log*
 
-# Environment
+# Environment secrets (still excluded)
 .env
 .env.local
 .env*.local
 
-# OS
+# OS junk
 .DS_Store
 Thumbs.db
+
+# Coverage reports
+coverage
+
+# Cache
+.turbo
+.next/cache

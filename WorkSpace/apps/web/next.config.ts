@@ -1,10 +1,8 @@
 import type { NextConfig } from "next";
 
+// Simplified config for Vercel: avoid tracing outside the web app directory.
+// Vercel handles output/tracing automatically; no need for custom root.
 const nextConfig: NextConfig = {
-  output: 'standalone',
-  outputFileTracingRoot: require('path').join(__dirname, '../../'),
-  
-  // Disable automatic static optimization for pages that need API calls
   experimental: {
     serverActions: {
       bodySizeLimit: '2mb',
