@@ -1,0 +1,30 @@
+# Ignore everything except the web app
+/*
+!/WorkSpace
+/WorkSpace/*
+!/WorkSpace/apps
+/WorkSpace/apps/*
+!/WorkSpace/apps/web
+
+# Node modules
+node_modules
+**/node_modules
+
+# Build outputs
+dist
+build
+.next
+out
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# OS
+.DS_Store
+Thumbs.db
