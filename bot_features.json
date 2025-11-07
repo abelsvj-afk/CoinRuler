@@ -6,308 +6,119 @@
     {
       "name": "Core Foundations",
       "features": [
-        {
-          "title": "Fully configured .env for environment variables",
-          "status": "todo"
-        },
-        {
-          "title": "MongoDB connected as persistent memory brain",
-          "status": "todo"
-        },
-        {
-          "title": "Coinbase API integration (dry-run default)",
-          "status": "todo"
-        },
-        {
-          "title": "Discord AI interface for advisory interaction",
-          "status": "todo"
-        },
-        {
-          "title": "Express webhooks for deposits, collateral, and external triggers",
-          "status": "todo"
-        },
-        {
-          "title": "Secure .env secrets with encryption or key vault in production",
-          "status": "todo"
-        }
+        { "title": "Fully configured .env for environment variables", "status": "in_progress" },
+        { "title": "MongoDB connected as persistent memory brain", "status": "done" },
+        { "title": "Coinbase API integration (dry-run default)", "status": "in_progress" },
+        { "title": "Discord AI interface for advisory interaction", "status": "done" },
+        { "title": "Express webhooks for deposits, collateral, and external triggers", "status": "in_progress" },
+        { "title": "Secure .env secrets with encryption or key vault in production", "status": "todo" }
       ]
     },
     {
       "name": "Advanced Market Analysis",
       "features": [
-        {
-          "title": "Real-time price monitoring for BTC, XRP, and approved coins",
-          "status": "todo"
-        },
-        {
-          "title": "News + sentiment analysis from credible sources",
-          "status": "todo"
-        },
-        {
-          "title": "Social sentiment monitoring (Twitter, Reddit, crypto outlets)",
-          "status": "todo"
-        },
-        {
-          "title": "Whale and large transaction detection",
-          "status": "todo"
-        },
-        {
-          "title": "Correlation analysis between BTC, ETH, Gold, and S&P500",
-          "status": "todo"
-        },
-        {
-          "title": "Volatility analysis via Monte Carlo simulations (1000+ trials)",
-          "status": "todo"
-        },
-        {
-          "title": "Predictive short-term price modeling using LSTM or ARIMA",
-          "status": "todo"
-        }
+        { "title": "Real-time price monitoring for BTC, XRP, and approved coins", "status": "in_progress" },
+        { "title": "News + sentiment analysis from credible sources", "status": "todo" },
+        { "title": "Social sentiment monitoring (Twitter, Reddit, crypto outlets)", "status": "todo" },
+        { "title": "Whale and large transaction detection", "status": "todo" },
+        { "title": "Correlation analysis between BTC, ETH, Gold, and S&P500", "status": "todo" },
+        { "title": "Volatility analysis via Monte Carlo simulations (1000+ trials)", "status": "in_progress" },
+        { "title": "Predictive short-term price modeling using LSTM or ARIMA", "status": "in_progress" }
       ]
     },
     {
       "name": "Portfolio Management & Strategy",
       "features": [
-        {
-          "title": "Dynamic baseline growth based on deposits",
-          "status": "todo"
-        },
-        {
-          "title": "Never sell or stake below baseline",
-          "status": "todo"
-        },
-        {
-          "title": "XRP profit-taking above baseline (never stake core XRP)",
-          "status": "todo"
-        },
-        {
-          "title": "Adaptive thresholds using Monte Carlo and ML confidence",
-          "status": "todo"
-        },
-        {
-          "title": "Reinvest safe portion of profits for compounding growth",
-          "status": "todo"
-        },
-        {
-          "title": "Strategy performance tracking in MongoDB",
-          "status": "todo"
-        }
+        { "title": "Dynamic baseline growth based on deposits", "status": "done" },
+        { "title": "Never sell or stake below baseline", "status": "done" },
+        { "title": "XRP profit-taking above baseline (never stake core XRP)", "status": "in_progress" },
+        { "title": "Adaptive thresholds using Monte Carlo and ML confidence", "status": "in_progress" },
+        { "title": "Reinvest safe portion of profits for compounding growth", "status": "todo" },
+        { "title": "Strategy performance tracking in MongoDB", "status": "done" }
       ]
     },
     {
       "name": "Machine Learning & AI Enhancements",
       "features": [
-        {
-          "title": "Reinforcement learning for decision optimization",
-          "status": "todo"
-        },
-        {
-          "title": "Predictive modeling for short-term BTC/XRP trends",
-          "status": "todo"
-        },
-        {
-          "title": "Sentiment-to-decision correlation via NLP",
-          "status": "todo"
-        },
-        {
-          "title": "Adaptive learning from user approval behavior",
-          "status": "todo"
-        },
-        {
-          "title": "Persistent MongoDB memory of all trades, approvals, and interactions",
-          "status": "todo"
-        },
-        {
-          "title": "Portfolio health scoring and diversification recommendations",
-          "status": "todo"
-        }
+        { "title": "Reinforcement learning for decision optimization", "status": "in_progress" },
+        { "title": "Predictive modeling for short-term BTC/XRP trends", "status": "in_progress" },
+        { "title": "Sentiment-to-decision correlation via NLP", "status": "todo" },
+        { "title": "Adaptive learning from user approval behavior", "status": "in_progress" },
+        { "title": "Persistent MongoDB memory of all trades, approvals, and interactions", "status": "done" },
+        { "title": "Portfolio health scoring and diversification recommendations", "status": "in_progress" }
       ]
     },
     {
       "name": "Advisory & Interaction Layer",
       "features": [
-        {
-          "title": "GPT-style conversational layer for Discord",
-          "status": "todo"
-        },
-        {
-          "title": "Commands: approve, decline, status, advice, deposit",
-          "status": "todo"
-        },
-        {
-          "title": "Natural language understanding for conversational input",
-          "status": "todo"
-        },
-        {
-          "title": "Optional SMS or mobile notifications for urgent alerts",
-          "status": "todo"
-        },
-        {
-          "title": "Personality memory layer for advisory tone and preferences",
-          "status": "todo"
-        }
+        { "title": "GPT-style conversational layer for Discord", "status": "done" },
+        { "title": "Commands: approve, decline, status, advice, deposit", "status": "in_progress" },
+        { "title": "Natural language understanding for conversational input", "status": "done" },
+        { "title": "Optional SMS or mobile notifications for urgent alerts", "status": "todo" },
+        { "title": "Personality memory layer for advisory tone and preferences", "status": "in_progress" }
       ]
     },
     {
       "name": "Staking & Yield Optimization",
       "features": [
-        {
-          "title": "Only stake non-core coins (never BTC/XRP)",
-          "status": "todo"
-        },
-        {
-          "title": "Risk-reward analysis for staking opportunities",
-          "status": "todo"
-        },
-        {
-          "title": "Compare APY yields and lock-in periods",
-          "status": "todo"
-        },
-        {
-          "title": "Require approval before executing staking",
-          "status": "todo"
-        },
-        {
-          "title": "Monitor staking positions and alert at maturity",
-          "status": "todo"
-        }
+        { "title": "Only stake non-core coins (never BTC/XRP)", "status": "done" },
+        { "title": "Risk-reward analysis for staking opportunities", "status": "in_progress" },
+        { "title": "Compare APY yields and lock-in periods", "status": "todo" },
+        { "title": "Require approval before executing staking", "status": "done" },
+        { "title": "Monitor staking positions and alert at maturity", "status": "todo" }
       ]
     },
     {
       "name": "Safety & Security",
       "features": [
-        {
-          "title": "Multi-factor verification for trades/stakes",
-          "status": "todo"
-        },
-        {
-          "title": "Sandbox simulation before execution",
-          "status": "todo"
-        },
-        {
-          "title": "Monitor Coinbase collateral and loan usage",
-          "status": "todo"
-        },
-        {
-          "title": "Alert for extreme volatility or portfolio imbalance",
-          "status": "todo"
-        },
-        {
-          "title": "Audit logs for all user commands and executions",
-          "status": "todo"
-        },
-        {
-          "title": "Encrypted key management and rotation system",
-          "status": "todo"
-        },
-        {
-          "title": "Fraud detection via anomaly pattern recognition",
-          "status": "todo"
-        }
+        { "title": "Multi-factor verification for trades/stakes", "status": "in_progress" },
+        { "title": "Sandbox simulation before execution", "status": "done" },
+        { "title": "Monitor Coinbase collateral and loan usage", "status": "in_progress" },
+        { "title": "Alert for extreme volatility or portfolio imbalance", "status": "in_progress" },
+        { "title": "Audit logs for all user commands and executions", "status": "in_progress" },
+        { "title": "Encrypted key management and rotation system", "status": "in_progress" },
+        { "title": "Fraud detection via anomaly pattern recognition", "status": "todo" }
       ]
     },
     {
       "name": "Dashboard & Visualization",
       "features": [
-        {
-          "title": "React + Tailwind dashboard for real-time visualization",
-          "status": "todo"
-        },
-        {
-          "title": "Visual AI brain map (profit, staking, Monte Carlo, ML)",
-          "status": "todo"
-        },
-        {
-          "title": "Portfolio metrics and risk indicators",
-          "status": "todo"
-        },
-        {
-          "title": "Performance history and advisory feed",
-          "status": "todo"
-        },
-        {
-          "title": "Interactive alert panel for all recommendations",
-          "status": "todo"
-        }
+        { "title": "React + Tailwind dashboard for real-time visualization", "status": "done" },
+        { "title": "Visual AI brain map (profit, staking, Monte Carlo, ML)", "status": "in_progress" },
+        { "title": "Portfolio metrics and risk indicators", "status": "done" },
+        { "title": "Performance history and advisory feed", "status": "in_progress" },
+        { "title": "Interactive alert panel for all recommendations", "status": "in_progress" }
       ]
     },
     {
       "name": "Optional but Powerful Enhancements",
       "features": [
-        {
-          "title": "Backtesting of trading and staking strategies",
-          "status": "todo"
-        },
-        {
-          "title": "Integration with trusted analytics APIs (Glassnode, Messari, CoinMetrics)",
-          "status": "todo"
-        },
-        {
-          "title": "Tax and accounting tracking for realized gains",
-          "status": "todo"
-        },
-        {
-          "title": "What-if portfolio scenario planning",
-          "status": "todo"
-        },
-        {
-          "title": "Multi-strategy reinforcement learning experiments",
-          "status": "todo"
-        },
-        {
-          "title": "Automatic safety shutdown for extreme conditions",
-          "status": "todo"
-        }
+        { "title": "Backtesting of trading and staking strategies", "status": "done" },
+        { "title": "Integration with trusted analytics APIs (Glassnode, Messari, CoinMetrics)", "status": "todo" },
+        { "title": "Tax and accounting tracking for realized gains", "status": "todo" },
+        { "title": "What-if portfolio scenario planning", "status": "in_progress" },
+        { "title": "Multi-strategy reinforcement learning experiments", "status": "in_progress" },
+        { "title": "Automatic safety shutdown for extreme conditions", "status": "done" }
       ]
     },
     {
       "name": "Real-World Awareness",
       "features": [
-        {
-          "title": "Track Coinbase debit card spending in USDC",
-          "status": "todo"
-        },
-        {
-          "title": "Account for loans/collateral in decisions",
-          "status": "todo"
-        },
-        {
-          "title": "Monitor economic and political events affecting BTC/XRP",
-          "status": "todo"
-        },
-        {
-          "title": "Adjust strategies dynamically to global indicators",
-          "status": "todo"
-        },
-        {
-          "title": "Require approval before adding new tokens",
-          "status": "todo"
-        }
+        { "title": "Track Coinbase debit card spending in USDC", "status": "todo" },
+        { "title": "Account for loans/collateral in decisions", "status": "in_progress" },
+        { "title": "Monitor economic and political events affecting BTC/XRP", "status": "todo" },
+        { "title": "Adjust strategies dynamically to global indicators", "status": "in_progress" },
+        { "title": "Require approval before adding new tokens", "status": "done" }
       ]
     },
     {
       "name": "Continuous Improvement & Personalization",
       "features": [
-        {
-          "title": "Reinforcement model retraining every 24 hours",
-          "status": "todo"
-        },
-        {
-          "title": "Store user feedback to refine strategies",
-          "status": "todo"
-        },
-        {
-          "title": "Conversational tone memory (adapts communication style)",
-          "status": "todo"
-        },
-        {
-          "title": "Permanent MongoDB memory (never forgets context)",
-          "status": "todo"
-        },
-        {
-          "title": "Adjusts strategy to long-term user goals",
-          "status": "todo"
-        }
+        { "title": "Reinforcement model retraining every 24 hours", "status": "in_progress" },
+        { "title": "Store user feedback to refine strategies", "status": "in_progress" },
+        { "title": "Conversational tone memory (adapts communication style)", "status": "in_progress" },
+        { "title": "Permanent MongoDB memory (never forgets context)", "status": "done" },
+        { "title": "Adjusts strategy to long-term user goals", "status": "in_progress" }
       ]
     }
   ],
