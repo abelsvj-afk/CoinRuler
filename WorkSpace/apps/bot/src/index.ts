@@ -105,6 +105,38 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
+    if (commandName === 'deposit') {
+      if (OWNER_ID && interaction.user.id !== OWNER_ID) {
+        await interaction.reply({ content: '❌ Unauthorized', ephemeral: true });
+        return;
+      }
+      const coin = interaction.options.getString('coin', true).toUpperCase();
+      const amount = interaction.options.getNumber('amount', true);
+      
+      if (amount <= 0) {
+        await interaction.reply({ content: '❌ Amount must be positive', ephemeral: true });
+        return;
+      }
+      
+      try {
+        await axios.post(`${apiBase}/portfolio/snapshot`, {
+          balances: { [coin]: amount },
+          isDeposit: true,
+          depositAmounts: { [coin]: amount },
+        });
+        await interaction.reply({ 
+          content: `✅ Deposit recorded: ${amount} ${coin}\nBaseline updated. New deposits are protected from trading.`, 
+          ephemeral: true 
+        });
+      } catch (e: any) {
+        await interaction.reply({ 
+          content: '❌ Error recording deposit: ' + (e?.response?.data?.error || e?.message || 'unknown'), 
+          ephemeral: true 
+        });
+      }
+      return;
+    }
+
     if (commandName === 'panic') {
       if (OWNER_ID && interaction.user.id !== OWNER_ID) {
         await interaction.reply({ content: '❌ Unauthorized', ephemeral: true });

@@ -113,6 +113,58 @@ export function applyRisk(rule: RuleSpec, ctx: EvalContext, candidate: Intent): 
     }
   }
 
+  // XRP minimum tokens protection
+  if (guardrails.has('minTokens')) {
+    const action = candidate.action as Action;
+    if (action.type === 'exit' || (action.type === 'enter' && action.allocationPct < 0)) {
+      const sym = (action as any).symbol?.toUpperCase();
+      if (sym === 'XRP') {
+        const minTokens = ctx.objectives?.coreAssets?.XRP?.minTokens || 10;
+        const currentXRP = ctx.portfolio.balances['XRP'] || 0;
+        const px = ctx.portfolio.prices['XRP'] || 0;
+        const totalValue = Object.entries(ctx.portfolio.balances).reduce(
+          (acc, [coin, qty]) => acc + (ctx.portfolio.prices[coin] || 0) * (qty as number),
+          0
+        );
+        const valueToSell = (action.allocationPct || 0) / 100 * totalValue;
+        const qtyToSell = px > 0 ? valueToSell / px : 0;
+        const remainingXRP = currentXRP - qtyToSell;
+        if (remainingXRP < minTokens) {
+          return { allowed: false, reason: `XRP minimum ${minTokens} tokens must be maintained (would leave ${remainingXRP.toFixed(2)})` };
+        }
+      }
+    }
+  }
+
+  // BTC collateral protection (prevent selling locked BTC)
+  if (guardrails.has('collateralProtection') && ctx.collateral) {
+    const action = candidate.action as Action;
+    if (action.type === 'exit' || (action.type === 'enter' && action.allocationPct < 0)) {
+      const sym = (action as any).symbol?.toUpperCase();
+      if (sym === 'BTC') {
+        // Find locked BTC collateral
+        const btcCollateral = ctx.collateral.find(c => c.currency.toUpperCase() === 'BTC');
+        if (btcCollateral && btcCollateral.locked > 0) {
+          const currentBTC = ctx.portfolio.balances['BTC'] || 0;
+          const px = ctx.portfolio.prices['BTC'] || 0;
+          const totalValue = Object.entries(ctx.portfolio.balances).reduce(
+            (acc, [coin, qty]) => acc + (ctx.portfolio.prices[coin] || 0) * (qty as number),
+            0
+          );
+          const valueToSell = (action.allocationPct || 0) / 100 * totalValue;
+          const qtyToSell = px > 0 ? valueToSell / px : 0;
+          const remainingBTC = currentBTC - qtyToSell;
+          if (remainingBTC < btcCollateral.locked) {
+            return { 
+              allowed: false, 
+              reason: `Cannot sell locked BTC collateral (${btcCollateral.locked.toFixed(8)} BTC locked, would leave ${remainingBTC.toFixed(8)})` 
+            };
+          }
+        }
+      }
+    }
+  }
+
     // Max position size
     if (r.maxPositionPct) {
       const action = candidate.action as Action;

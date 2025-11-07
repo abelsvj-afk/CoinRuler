@@ -5,7 +5,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { MongoClient, Db, ObjectId } from 'mongodb';
-import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation } from '@coinruler/shared';
+import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation, getCoinbaseApiClient } from '@coinruler/shared';
 // Lazy import of rules package (monorepo build order safety)
 import { parseRule, createRule as createRuleDoc, listRules as listRuleDocs, setRuleEnabled, evaluateRulesTick, runOptimizationCycle, backtestRule, getRiskState, recordExecution, type EvalContext, type RuleSpec, type BacktestConfig } from '@coinruler/rules';
 import {
@@ -156,6 +156,54 @@ app.get('/health/full', async (_req, res) => {
       // Kill-switch status
       const ks = await db.collection('state').findOne({ key: 'killSwitch' });
       checks.killSwitch = ks?.value || { enabled: false };
+    }
+    
+    // Test Coinbase API connection
+    try {
+      const coinbaseClient = getCoinbaseApiClient();
+      const isConnected = await coinbaseClient.testConnection();
+      checks.coinbase = {
+        status: isConnected ? 'connected' : 'failed',
+        apiKeyConfigured: !!(process.env.COINBASE_API_KEY),
+      };
+      if (isConnected) {
+        // Get live balances
+        const balances = await coinbaseClient.getAllBalances();
+        const prices = await coinbaseClient.getSpotPrices(Object.keys(balances));
+        checks.coinbase.balances = balances;
+        checks.coinbase.prices = prices;
+        // Calculate total portfolio value
+        let totalValue = 0;
+        for (const [currency, amount] of Object.entries(balances)) {
+          totalValue += (amount as number) * (prices[currency] || 0);
+        }
+        checks.coinbase.totalValueUSD = totalValue.toFixed(2);
+        
+        // Get collateral information (if available)
+        try {
+          const collateral = await coinbaseClient.getCollateral();
+          checks.coinbase.collateral = collateral;
+          
+          // Store collateral in MongoDB for risk layer
+          if (db && collateral.length > 0) {
+            await db.collection('collateral').deleteMany({}); // Clear old data
+            await db.collection('collateral').insertMany(
+              collateral.map((c: any) => ({
+                ...c,
+                updatedAt: new Date(),
+              }))
+            );
+          }
+        } catch (collateralErr: any) {
+          checks.coinbase.collateralError = collateralErr.message;
+        }
+      }
+    } catch (err: any) {
+      checks.coinbase = {
+        status: 'error',
+        error: err.message,
+        apiKeyConfigured: !!(process.env.COINBASE_API_KEY),
+      };
     }
   } catch (err: any) {
     checks.mongodb = 'error';
@@ -645,6 +693,129 @@ app.post('/chat/stream', async (req, res) => {
   }
 });
 
+// ML Learning endpoints
+app.get('/ml/preferences', async (_req, res) => {
+  try {
+    const { calculateUserPreferences } = await import('@coinruler/shared');
+    
+    // Fetch trade decisions from MongoDB
+    const decisions = await db?.collection('trade_decisions').find({}).toArray() || [];
+    
+    if (decisions.length === 0) {
+      return res.json({
+        message: 'No learning data yet',
+        preferences: null,
+        recommendations: 'Start approving/declining trades to build learning data',
+      });
+    }
+    
+    const preferences = calculateUserPreferences(decisions as any);
+    res.json({ preferences });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/ml/patterns', async (_req, res) => {
+  try {
+    const { extractLearningPatterns } = await import('@coinruler/shared');
+    
+    const decisions = await db?.collection('trade_decisions').find({}).toArray() || [];
+    
+    if (decisions.length === 0) {
+      return res.json({ patterns: [], message: 'No learning data available' });
+    }
+    
+    const patterns = extractLearningPatterns(decisions as any);
+    res.json({ 
+      patterns,
+      totalDecisions: decisions.length,
+      analyzedAt: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/ml/predict-approval', async (req, res) => {
+  try {
+    const { coin, type, amount, price, profitPct, marketConditions } = req.body;
+    const { predictUserApproval, calculateUserPreferences, extractLearningPatterns } = await import('@coinruler/shared');
+    
+    const decisions = await db?.collection('trade_decisions').find({}).toArray() || [];
+    const preferences = calculateUserPreferences(decisions as any);
+    const patterns = extractLearningPatterns(decisions as any);
+    
+    const prediction = predictUserApproval(
+      { coin, type, amount, price, profitPct, marketConditions },
+      preferences,
+      patterns
+    );
+    
+    res.json({ 
+      prediction,
+      basedOn: {
+        historicalDecisions: decisions.length,
+        learnedPatterns: patterns.length,
+        confidenceScore: preferences.confidenceScore,
+      }
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/intelligence/:coin', async (req, res) => {
+  try {
+    const { coin } = req.params;
+    const { gatherMarketIntelligence } = await import('@coinruler/shared');
+    
+    // Get latest price data
+    const snapshot = await db?.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
+    const prices = snapshot?._prices || {};
+    const currentPrice = prices[coin.toUpperCase()] || 0;
+    
+    // Calculate 24h change (would need historical data)
+    const priceChange24h = 0; // Placeholder
+    const volumeChange24h = 0; // Placeholder
+    
+    const intelligence = await gatherMarketIntelligence(
+      coin.toUpperCase(),
+      { currentPrice, priceChange24h, volumeChange24h }
+    );
+    
+    res.json({ intelligence });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/intelligence', async (_req, res) => {
+  try {
+    const { gatherMarketIntelligence } = await import('@coinruler/shared');
+    
+    // Get intelligence for core assets
+    const snapshot = await db?.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
+    const prices = snapshot?._prices || {};
+    
+    const coins = ['BTC', 'XRP'];
+    const intelligenceData = await Promise.all(
+      coins.map(async coin => {
+        const currentPrice = prices[coin] || 0;
+        const intelligence = await gatherMarketIntelligence(
+          coin,
+          { currentPrice, priceChange24h: 0, volumeChange24h: 0 }
+        );
+        return { coin, intelligence };
+      })
+    );
+    
+    res.json({ data: intelligenceData, timestamp: new Date().toISOString() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // SSE endpoint for live updates
 app.get('/live', (req, res) => {
   res.set({
@@ -738,11 +909,21 @@ async function startServer() {
         delete balances._id;
         delete balances.timestamp;
 
+        // Fetch collateral data for risk checks
+        const collateralDocs = await db.collection('collateral').find({}).toArray();
+        const collateral = collateralDocs.map(doc => ({
+          currency: doc.currency,
+          locked: doc.locked || 0,
+          ltv: doc.ltv,
+          health: doc.health,
+        }));
+
         const ctx: EvalContext = {
           now: new Date(),
           portfolio: { balances, prices },
           objectives: objectivesDoc?.value || {},
           lastExecutions: lastRuleExecutions,
+          collateral,
         };
         const intents = await evaluateRulesTick(db, ctx);
         for (const intent of intents) {
@@ -831,11 +1012,11 @@ async function startServer() {
             });
           }
         
-          if (riskState.dailyLossUSD < -1000) {
+          if (riskState.dailyLoss < -1000) {
             liveEvents.emit('alert', {
               type: 'risk',
               severity: 'high',
-              message: `Daily loss threshold approaching: $${riskState.dailyLossUSD.toFixed(2)}`,
+              message: `Daily loss threshold approaching: $${riskState.dailyLoss.toFixed(2)}`,
               data: riskState,
               timestamp: new Date().toISOString(),
             });

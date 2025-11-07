@@ -17,7 +17,7 @@ export type Action =
 export interface RiskSpec {
   maxPositionPct?: number;
   maxDailyLossPct?: number;
-  guardrails?: Array<'circuitDrawdown' | 'throttleVelocity' | 'baselineProtection'>;
+  guardrails?: Array<'circuitDrawdown' | 'throttleVelocity' | 'baselineProtection' | 'minTokens' | 'collateralProtection'>;
   cooldownSecs?: number; // minimum time between executions
 }
 
@@ -58,6 +58,7 @@ export interface EvalContext {
   objectives?: Objectives;
   lastExecutions?: Record<string, Date>; // ruleId -> last time executed
   marketData?: any; // room for OHLCV, sentiment, etc.
+  collateral?: Array<{ currency: string; locked: number; ltv?: number; health?: number }>; // Coinbase collateral data
 }
 
 export type Intent = {

@@ -5,3 +5,4 @@ export * from './evaluator';
 export * from './risk';
 export * from './optimizer';
 export * from './backtester';
+export * from './profitTaking';
