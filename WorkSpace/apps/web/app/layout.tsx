@@ -28,7 +28,13 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const session = await auth();
+  let session = null as any;
+  try {
+    session = await auth();
+  } catch (e) {
+    // If NEXTAUTH_SECRET is missing or auth fails, render without a session
+    session = null;
+  }
   
   return (
     <html lang="en">

@@ -1,3 +1,11 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json"
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "cd WorkSpace/apps/web && npm install && npm run build",
+  "devCommand": "cd WorkSpace/apps/web && npm run dev",
+  "outputDirectory": "WorkSpace/apps/web/.next",
+  "ignoreCommand": "echo Using .vercelignore",
+  "env": {
+    "NEXTAUTH_URL": "https://coin-ruler.vercel.app"
+  }
 }
