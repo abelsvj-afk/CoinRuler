@@ -118,16 +118,20 @@ const DATABASE_NAME = process.env.DATABASE_NAME || 'coinruler';
 
 // Connection options to fix SSL/TLS issues
 // Note: tlsAllowInvalidCertificates set to true temporarily for MongoDB Atlas compatibility
-const mongoOptions = {
-  tls: true,
-  tlsAllowInvalidCertificates: true, // Temporary fix for Atlas TLS mismatch
-  tlsAllowInvalidHostnames: false,
-  serverSelectionTimeoutMS: 5000, // Reduced to 5s for faster startup
-  connectTimeoutMS: 5000,
-  retryWrites: true,
-  w: 'majority' as const,
-  maxPoolSize: 10,
-};
+// Determine TLS usage dynamically: use TLS for Atlas (mongodb+srv) URIs, disable for plain localhost fallback
+const mongoOptions = (() => {
+  const isSrv = MONGODB_URI.startsWith('mongodb+srv://');
+  return {
+    tls: isSrv,
+    tlsAllowInvalidCertificates: isSrv, // Allow flexibility only for Atlas
+    tlsAllowInvalidHostnames: false,
+    serverSelectionTimeoutMS: 5000,
+    connectTimeoutMS: 5000,
+    retryWrites: true,
+    w: 'majority' as const,
+    maxPoolSize: 10,
+  };
+})();
 
 async function connectMongoDB() {
   try {
