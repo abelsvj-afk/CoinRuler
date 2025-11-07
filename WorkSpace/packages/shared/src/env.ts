@@ -12,8 +12,9 @@ const EnvSchema = z.object({
   MONGODB_URI: z.string().min(1, 'MONGODB_URI required'),
   DATABASE_NAME: z.string().min(1, 'DATABASE_NAME required'),
   DISCORD_BOT_TOKEN: z.string().min(1, 'DISCORD_BOT_TOKEN required'),
-  COINBASE_API_KEY: z.string().min(1, 'COINBASE_API_KEY required'),
-  COINBASE_API_SECRET: z.string().min(1, 'COINBASE_API_SECRET required'),
+  // Coinbase keys now optional: if absent, integration runs in disabled mode
+  COINBASE_API_KEY: z.string().optional(),
+  COINBASE_API_SECRET: z.string().optional(),
   DRY_RUN: z.string().default('true'),
   OWNER_ID: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
@@ -61,4 +62,9 @@ export function requireOwner(authId?: string): boolean {
 
 export function getEnv(): Env {
   return validateEnv();
+}
+
+export function hasCoinbaseCredentials(): boolean {
+  const env = validateEnv();
+  return !!(env.COINBASE_API_KEY && env.COINBASE_API_SECRET);
 }

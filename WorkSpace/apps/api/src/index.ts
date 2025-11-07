@@ -5,7 +5,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { MongoClient, Db, ObjectId } from 'mongodb';
-import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation, getCoinbaseApiClient, validateEnv, isDryRun, getEnv, getLogger } from '@coinruler/shared';
+import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation, getCoinbaseApiClient, validateEnv, isDryRun, getEnv, getLogger, hasCoinbaseCredentials } from '@coinruler/shared';
 // Lazy import of rules package (monorepo build order safety)
 import { parseRule, createRule as createRuleDoc, listRules as listRuleDocs, setRuleEnabled, evaluateRulesTick, runOptimizationCycle, backtestRule, getRiskState, recordExecution, type EvalContext, type RuleSpec, type BacktestConfig } from '@coinruler/rules';
 import {
@@ -172,15 +172,16 @@ app.get('/health/full', async (_req, res) => {
       checks.killSwitch = ks?.value || { enabled: false };
     }
     
-    // Test Coinbase API connection
-    try {
-      const coinbaseClient = getCoinbaseApiClient();
-      const isConnected = await coinbaseClient.testConnection();
-      checks.coinbase = {
-        status: isConnected ? 'connected' : 'failed',
-        apiKeyConfigured: !!(process.env.COINBASE_API_KEY),
-      };
-      if (isConnected) {
+    // Coinbase integration (optional)
+    if (hasCoinbaseCredentials()) {
+      try {
+        const coinbaseClient = getCoinbaseApiClient();
+        const isConnected = await coinbaseClient.testConnection();
+        checks.coinbase = {
+          status: isConnected ? 'connected' : 'failed',
+          apiKeyConfigured: true,
+        };
+        if (isConnected) {
         // Get live balances
         const balances = await coinbaseClient.getAllBalances();
         const prices = await coinbaseClient.getSpotPrices(Object.keys(balances));
@@ -211,13 +212,16 @@ app.get('/health/full', async (_req, res) => {
         } catch (collateralErr: any) {
           checks.coinbase.collateralError = collateralErr.message;
         }
+        }
+      } catch (err: any) {
+        checks.coinbase = {
+          status: 'error',
+          error: err.message,
+          apiKeyConfigured: true,
+        };
       }
-    } catch (err: any) {
-      checks.coinbase = {
-        status: 'error',
-        error: err.message,
-        apiKeyConfigured: !!(process.env.COINBASE_API_KEY),
-      };
+    } else {
+      checks.coinbase = { status: 'disabled', apiKeyConfigured: false };
     }
   } catch (err: any) {
     checks.mongodb = 'error';
