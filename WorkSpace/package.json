@@ -15,7 +15,7 @@
     "test": "jest --coverage",
     "test:watch": "jest --watch",
     "format": "prettier --write \"**/*.{ts,tsx,json,md}\" || echo 'Format complete'",
-    "prepare": "husky install",
+  "prepare": "husky install || echo 'skip husky (no .git or husky not available)'",
     "workflows:run": "npm run build -w packages/workflows && node packages/workflows/dist/cli/run-workflow.js"
   },
   "devDependencies": {
