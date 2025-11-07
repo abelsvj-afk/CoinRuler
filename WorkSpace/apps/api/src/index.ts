@@ -83,9 +83,24 @@ app.use(helmet({
   contentSecurityPolicy: false, // Allow SSE
 }));
 // CORS to allow the web app to call the API from a different port
-const WEB_ORIGIN = process.env.WEB_ORIGIN || process.env.NEXT_PUBLIC_WEB_ORIGIN || 'http://localhost:3000';
+// Support multiple origins via comma-separated WEB_ORIGIN values
+const ORIGIN_RAW = process.env.WEB_ORIGIN || process.env.NEXT_PUBLIC_WEB_ORIGIN || 'http://localhost:3000';
+const ORIGINS = ORIGIN_RAW.split(',').map(o => o.trim()).filter(Boolean);
 app.use(cors({
-  origin: WEB_ORIGIN,
+  origin: (origin, callback) => {
+    // Allow requests with no origin like curl or same-origin
+    if (!origin) return callback(null, true);
+    const allowed = ORIGINS.some(allowedOrigin => {
+      if (allowedOrigin.startsWith('*.')) {
+        // wildcard subdomain support: *.example.com
+        const base = allowedOrigin.slice(2);
+        return origin === `https://${base}` || origin === `http://${base}` || origin.endsWith(`.${base}`);
+      }
+      return origin === allowedOrigin;
+    });
+    if (allowed) return callback(null, true);
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,
 }));
@@ -145,6 +160,17 @@ async function connectMongoDB() {
 
 // Health check
 app.get('/health', (_req, res) => res.json({ ok: true, db: db ? 'connected' : 'disconnected', dryRun: isDryRun() }));
+
+// Quick env diagnostics (safe subset only)
+app.get('/env', (_req, res) => {
+  res.json({
+    ok: true,
+    origins: ORIGINS,
+    port: Number(process.env.API_PORT || process.env.PORT || 3001),
+    hasMongoUri: !!process.env.MONGODB_URI,
+    hasOwnerId: !!getEnv().OWNER_ID,
+  });
+});
 
 // Full system diagnostics
 app.get('/health/full', async (_req, res) => {
@@ -926,7 +952,7 @@ async function startServer() {
     log.info(`API listening on :${port}`);
     log.info(`Health: http://localhost:${port}/health`);
     log.info(`Full Health: http://localhost:${port}/health/full`);
-    log.info(`CORS origin: ${WEB_ORIGIN}`);
+  log.info(`CORS origins: ${ORIGINS.join(', ')}`);
     
     if (!db) {
   const log = getLogger({ svc: 'api' });
