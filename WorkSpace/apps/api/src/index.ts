@@ -172,6 +172,15 @@ app.get('/env', (_req, res) => {
   });
 });
 
+// Version endpoint to verify deployed build hash/time
+app.get('/version', (_req, res) => {
+  res.json({
+    commit: process.env.VERCEL_GIT_COMMIT_SHA || process.env.COMMIT_SHA || 'unknown',
+    builtAt: process.env.BUILD_TIME || new Date().toISOString(),
+    features: ['portfolio/current','balances','approvals/pending','analysis/projection','report/daily']
+  });
+});
+
 // Full system diagnostics
 app.get('/health/full', async (_req, res) => {
   const checks: any = {
