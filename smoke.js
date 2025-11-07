@@ -15,6 +15,24 @@ async function checkHealth() {
   });
 }
 
+async function evaluateRulesOnce() {
+  try {
+    const apiPort = process.env.API_PORT || process.env.PORT || 3001;
+    const url = `http://localhost:${apiPort}/rules/evaluate`;
+    const headers = { 'Content-Type': 'application/json' };
+    if (process.env.OWNER_ID) headers['X-Owner-Id'] = process.env.OWNER_ID;
+    const res = await fetch(url, { method: 'POST', headers });
+    if (res.ok) {
+      const data = await res.json();
+      console.log('Rules evaluation result:', data);
+    } else {
+      console.log('Rules evaluation endpoint returned status', res.status);
+    }
+  } catch (e) {
+    console.log('Rule evaluation trigger failed (non-critical):', e?.message || e);
+  }
+}
+
 async function smoke() {
   console.log('Checking http://localhost:3000/health ...');
   const health = await checkHealth();
@@ -44,6 +62,8 @@ async function smoke() {
       } catch (e) {
         console.log('Could not read baselines collection:', e && e.message ? e.message : e);
       }
+      // Trigger one rules evaluation (dry-run) after smoke DB check
+      await evaluateRulesOnce();
       await client.close();
     } catch (err) {
       console.error('Mongo smoke test failed:', err && err.message ? err.message : err);

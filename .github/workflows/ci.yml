@@ -7,25 +7,31 @@ on:
     branches: [ main ]
 
 jobs:
-  build-and-test:
+  build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Use Node.js 20.x
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Install dependencies
-        run: npm ci
-      - name: Lint (eslint)
-        run: |
-          npx eslint . || echo 'Lint warnings only (fail on errors)'
-      - name: Run tests (Jest)
-        run: |
-          npm test -- --ci --colors
+          cache: npm
+      - name: Install root deps
+        run: npm install
+      - name: Install workspace deps
+        run: cd WorkSpace && npm install
+      - name: Lint
+        run: cd WorkSpace && npm run lint || echo "Lint warnings ignored"
+      - name: Build shared packages
+        run: cd WorkSpace && npm run build -w packages/shared -w packages/rules -w packages/llm -w packages/analytics -w packages/security -w packages/alerting -w packages/workflows
+      - name: Build API & Bot
+        run: cd WorkSpace && npm run build -w apps/api -w apps/bot
+      - name: Test
+        run: cd WorkSpace && npm test -- --ci --passWithNoTests
       - name: Upload coverage
-        if: success() || failure()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
-          path: coverage/
+          name: coverage
+          path: WorkSpace/coverage

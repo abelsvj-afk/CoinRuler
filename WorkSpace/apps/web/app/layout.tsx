@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ToastContainer } from './components/Toast';
+import { SSEClient } from './components/SSEClient';
 import { SessionProvider } from "next-auth/react";
 import { auth } from "@/auth";
 import { LogoutButton } from "./components/LogoutButton";
@@ -57,6 +58,7 @@ export default async function RootLayout({
           {session && (
             <WelcomeModal />
           )}
+          {session && <SSEClient />}
         </SessionProvider>
       </body>
     </html>

@@ -8,6 +8,8 @@ export * from './selfHealing';
 export * from './coinbaseApi';
 export * from './mlLearning';
 export * from './marketIntelligence';
+export * from './env';
+export * from './logger';
 
 export function formatUSD(amount: number): string {
   return `$${amount.toFixed(2)}`;

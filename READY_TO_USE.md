@@ -66,68 +66,110 @@ This will show:
 - ✅ Current spot prices
 - ✅ Total portfolio value
 - ✅ Connection status
-
----
-
-## 🤖 DISCORD COMMANDS YOU CAN USE
+### 1. **API Server** 🟢 (Standalone Railway service)
+- Running on port 3001
+- MongoDB Atlas connected (degraded mode fallback)
+- Endpoints: health, portfolio, approvals, kill-switch, rules, rotation, ML, intelligence
+- SSE `/live` streaming real-time events (approvals, alerts, kill-switch)
+- Schedulers running (rules, monitoring, optimization)
 
 Open Discord and type `/` to see:
-
-| Command | What It Does |
-|---------|--------------|
+### 2. **Discord Bot** 🟢 (Separate Railway service)
+- Online as `CoinRuler#6259`
+- Connected to your Discord server
+- Slash commands registered and working
+- Talks to API via `API_BASE` (ensure correct env in bot service)
 | `/ping` | Test if bot is online |
 | `/status` | Check API health |
-| `/approvals` | View pending trades |
-| `/approve <id>` | Approve a trade (owner only) |
-| `/reject <id>` | Reject a trade (owner only) |
+### 3. **Coinbase Integration** 🟡
+- API credentials configured
+- Secret newline normalization applied
+- Ready to test with `node test-coinbase.js`
 | `/deposit` | Log a deposit and update baselines |
 
----
+## 🚀 HOW TO USE YOUR SYSTEM (Multi-Service Layout)
 
 ## 💰 YOUR PROFIT-TAKING SYSTEM
 
 Your bot is configured to:
 1. ✅ **Always protect your baselines** (BTC and XRP minimum holdings)
 2. ✅ **Take profits automatically** when prices rise
+**Start API (local dev):**
+```bash
+cd WorkSpace\apps\api
+npm run build && node dist/index.js
+```
 3. ✅ **Learn from your decisions** (ML/AI tracks what you approve/reject)
 4. ✅ **Adapt to market conditions** (real-time intelligence)
 5. ✅ **Respect risk limits** (collateral protection, throttling)
 
 ---
 
+**Start Discord Bot:**
+```bash
+cd WorkSpace
+npm run build -w apps/bot && node apps/bot/dist/index.js
+```
 ## 🎯 WHAT TO DO NEXT
 
 ### 1. Verify Coinbase Works
 ```bash
 node test-coinbase.js
+### Check API Health
+```bash
+curl http://localhost:3001/health
+curl http://localhost:3001/health/full
+```
 ```
 Expected output: Your real account balances and prices.
 
 ### 2. Open Web Dashboard
 ```bash
 cd WorkSpace
+## 🔐 SECURITY & ENV VALIDATION
+1. `.env` values validated at startup (`validateEnv()` in shared package)
+2. DRY_RUN enforced true unless OWNER_ID present & DRY_RUN=false explicitly
+3. Separate Railway services allow independent scaling & blast-radius reduction
+4. Use kill switch (`/kill-switch`, Discord `/panic`) for emergency halt
+5. Rotate credentials using rotation endpoints or Discord rotation commands
 npm run dev -w apps/web
 ```
 Then go to: http://localhost:3000
 
 ### 3. Set Your Trading Objectives
+### API Won't Start
+1. Confirm env validation errors in logs (pino/console output)
+2. Check MongoDB Atlas IP whitelist or network restrictions
+3. Verify `.env` (see updated `.env.example` with required fields)
+4. Rebuild: `cd WorkSpace && npm run build -w apps/api`
 In the web dashboard:
 - Configure BTC baseline (e.g., 0.5 BTC minimum to always hold)
 - Configure XRP baseline (e.g., 1000 XRP minimum to always hold)
 - Set profit-taking thresholds
 - Define risk tolerance
+### Bot Goes Offline
+1. Ensure API reachable at `API_BASE`
+2. Confirm `DISCORD_BOT_TOKEN` set
+3. Restart: `cd WorkSpace && npm run build -w apps/bot && node apps/bot/dist/index.js`
 
 ### 4. Test Discord Bot
 In Discord:
 - Try `/ping` → Should reply "Pong!"
 - Try `/status` → Should show API status
+### Coinbase Not Working
+1. Run `node test-coinbase.js` (prints connection diagnostics)
+2. Check key scopes (Advanced Trade: view & trade)
+3. Verify secret formatting (no stray newline unless expected)
 - Try `/deposit` → Test the deposit workflow
 
 ---
 
 ## 📊 MONITORING YOUR SYSTEM
+**Test Coinbase**
+node test-coinbase.js
 
 ### Check API Health
+**Status**: 🟢 ALL SYSTEMS GO (Multi-Service)! 🚀
 ```bash
 curl http://localhost:3001/health
 ```

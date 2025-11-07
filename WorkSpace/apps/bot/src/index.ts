@@ -2,6 +2,15 @@ import 'dotenv/config';
 import { Client, GatewayIntentBits } from 'discord.js';
 import axios from 'axios';
 import { getLLMAdvice } from '@coinruler/llm';
+import { validateEnv, getLogger } from '@coinruler/shared';
+
+try {
+  validateEnv();
+  getLogger({ svc: 'bot' }).info('Bot environment validated');
+} catch (e) {
+  getLogger({ svc: 'bot' }).error('Invalid bot environment configuration.');
+  process.exit(1);
+}
 
 const token = process.env.DISCORD_BOT_TOKEN;
 const OWNER_ID = process.env.OWNER_ID;
@@ -21,13 +30,14 @@ const client = new Client({
 const apiBase = process.env.API_BASE_URL || process.env.API_BASE || 'http://localhost:3001';
 
 client.on('ready', () => {
-  console.log(`Bot logged in as ${client.user?.tag}`);
-  console.log(`Bot is in ${client.guilds.cache.size} server(s):`);
+  const log = getLogger({ svc: 'bot' });
+  log.info(`Bot logged in as ${client.user?.tag}`);
+  log.info(`Bot is in ${client.guilds.cache.size} server(s):`);
   client.guilds.cache.forEach(guild => {
-    console.log(`  - ${guild.name} (ID: ${guild.id})`);
+    log.info(`  - ${guild.name} (ID: ${guild.id})`);
   });
-  console.log(`\n✅ Slash commands registered! Try typing / in Discord to see them.`);
-  console.log(`\nBot invite URL: https://discord.com/api/oauth2/authorize?client_id=${client.user?.id}&permissions=8&scope=bot`);
+  log.info(`Slash commands registered! Try typing / in Discord to see them.`);
+  log.info(`Bot invite URL: https://discord.com/api/oauth2/authorize?client_id=${client.user?.id}&permissions=8&scope=bot`);
 });
 
 // Handle slash commands
@@ -255,7 +265,7 @@ client.on('messageCreate', async (message) => {
   const content = message.content.trim();
   
   const channelName = 'name' in message.channel ? message.channel.name : 'DM';
-  console.log(`[Message] ${message.author.tag} in #${channelName}: ${content}`);
+  getLogger({ svc: 'bot' }).info(`[Message] ${message.author.tag} in #${channelName}: ${content}`);
   
   // /ping
   if (content === '/ping') {
@@ -455,3 +465,12 @@ client.on('messageCreate', async (message) => {
 });
 
 client.login(token);
+
+// Graceful shutdown for Discord client
+const shutdown = async (signal: string) => {
+  getLogger({ svc: 'bot' }).info(`\n${signal} received. Shutting down bot...`);
+  try { await client.destroy(); } catch {}
+  process.exit(0);
+};
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));

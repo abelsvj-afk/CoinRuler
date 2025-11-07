@@ -5,7 +5,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { MongoClient, Db, ObjectId } from 'mongodb';
-import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation, getCoinbaseApiClient } from '@coinruler/shared';
+import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation, getCoinbaseApiClient, validateEnv, isDryRun, getEnv, getLogger } from '@coinruler/shared';
 // Lazy import of rules package (monorepo build order safety)
 import { parseRule, createRule as createRuleDoc, listRules as listRuleDocs, setRuleEnabled, evaluateRulesTick, runOptimizationCycle, backtestRule, getRiskState, recordExecution, type EvalContext, type RuleSpec, type BacktestConfig } from '@coinruler/rules';
 import {
@@ -64,6 +64,15 @@ if (typeof WebSocket !== 'undefined') {
   }
 }
 
+// Validate environment early
+try {
+  validateEnv();
+  getLogger({ svc: 'api' }).info('Environment variables validated');
+} catch (e) {
+  getLogger({ svc: 'api' }).error('Environment validation failed. Exiting.');
+  process.exit(1);
+}
+
 // Real-time event emitter for SSE
 const liveEvents = new EventEmitter();
 let sseClientCount = 0;
@@ -110,23 +119,24 @@ async function connectMongoDB() {
     console.log(`🔄 Attempting MongoDB connection to ${MONGODB_URI.replace(/\/\/.*@/, '//<credentials>@')}...`);
     const client = await MongoClient.connect(MONGODB_URI, mongoOptions);
     db = client.db(DATABASE_NAME);
-    console.log('✅ MongoDB connected successfully');
+    getLogger({ svc: 'api' }).info('MongoDB connected successfully');
     liveEvents.emit('system:health', { component: 'mongodb', status: 'connected' });
     return true;
   } catch (err: any) {
-    console.error('❌ MongoDB connection error:', err.message);
-    console.warn('⚠️  API will start in degraded mode without database access.');
-    console.warn('⚠️  Check: 1) MongoDB Atlas IP whitelist, 2) Credentials, 3) Cluster status');
+    const log = getLogger({ svc: 'api' });
+    log.error({ err: err?.message }, 'MongoDB connection error');
+    log.warn('API will start in degraded mode without database access.');
+    log.warn('Check: 1) MongoDB Atlas IP whitelist, 2) Credentials, 3) Cluster status');
     // Retry in background without blocking startup
     setTimeout(async () => {
-      console.log('🔄 Retrying MongoDB connection...');
+      getLogger({ svc: 'api' }).info('Retrying MongoDB connection...');
       try {
         const client = await MongoClient.connect(MONGODB_URI, mongoOptions);
         db = client.db(DATABASE_NAME);
-        console.log('✅ MongoDB reconnected successfully');
+        getLogger({ svc: 'api' }).info('MongoDB reconnected successfully');
         liveEvents.emit('system:health', { component: 'mongodb', status: 'reconnected' });
       } catch (retryErr: any) {
-        console.error('❌ MongoDB retry failed:', retryErr.message);
+        getLogger({ svc: 'api' }).error({ err: retryErr?.message }, 'MongoDB retry failed');
       }
     }, 30000); // Retry after 30s
     return false;
@@ -134,7 +144,7 @@ async function connectMongoDB() {
 }
 
 // Health check
-app.get('/health', (_req, res) => res.json({ ok: true, db: db ? 'connected' : 'disconnected' }));
+app.get('/health', (_req, res) => res.json({ ok: true, db: db ? 'connected' : 'disconnected', dryRun: isDryRun() }));
 
 // Full system diagnostics
 app.get('/health/full', async (_req, res) => {
@@ -143,6 +153,8 @@ app.get('/health/full', async (_req, res) => {
     dbConnected: !!db,
     sseClients: sseClientCount,
     lastRuleExecutions: Object.keys(lastRuleExecutions || {}).length,
+    dryRun: isDryRun(),
+    ownerProtection: !!getEnv().OWNER_ID,
   };
   try {
     if (db) {
@@ -251,7 +263,7 @@ app.post('/approvals', async (req, res) => {
 });
 
 // Update approval status
-app.patch('/approvals/:id', async (req, res) => {
+app.patch('/approvals/:id', ownerAuth, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Database not connected' });
   try {
     const { id } = req.params;
@@ -278,7 +290,7 @@ app.get('/kill-switch', async (_req, res) => {
   }
 });
 
-app.post('/kill-switch', async (req, res) => {
+app.post('/kill-switch', ownerAuth, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Database not connected' });
   try {
     const { enabled, reason, setBy } = req.body;
@@ -303,7 +315,7 @@ app.get('/portfolio', async (_req, res) => {
 });
 
 // Create snapshot and notify (for deposits or significant changes)
-app.post('/portfolio/snapshot', async (req, res) => {
+app.post('/portfolio/snapshot', ownerAuth, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Database not connected' });
   try {
     const { balances, prices, reason, isDeposit, depositAmounts } = req.body;
@@ -515,7 +527,7 @@ app.get('/rules/:id/metrics', async (req, res) => {
 });
 
 // Run optimizer manually or get last results
-app.post('/rules/optimize', async (req, res) => {
+app.post('/rules/optimize', ownerAuth, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Database not connected' });
   try {
     const config = req.body || {};
@@ -555,7 +567,7 @@ app.post('/rules/optimize', async (req, res) => {
 });
 
 // Backtest a rule
-app.post('/rules/:id/backtest', async (req, res) => {
+app.post('/rules/:id/backtest', ownerAuth, async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Database not connected' });
   try {
     const { id } = req.params;
@@ -571,6 +583,25 @@ app.post('/rules/:id/backtest', async (req, res) => {
     
     const result = await backtestRule(db, rule, config);
     res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Evaluate rules once (dry-run, no approvals created)
+app.post('/rules/evaluate', ownerAuth, async (_req, res) => {
+  if (!db) return res.status(503).json({ error: 'Database not connected' });
+  try {
+    const objectivesDoc = await db.collection('objectives').findOne({ key: 'owner' });
+    const latest = await db.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
+    const balances = { ...(latest || {}) } as any;
+    const prices = (latest?._prices as Record<string, number>) || {};
+    delete (balances as any)._prices; delete (balances as any)._id; delete (balances as any).timestamp;
+    const collateralDocs = await db.collection('collateral').find({}).toArray();
+    const collateral = collateralDocs.map(doc => ({ currency: doc.currency, locked: doc.locked || 0, ltv: doc.ltv, health: doc.health }));
+    const ctx: EvalContext = { now: new Date(), portfolio: { balances, prices }, objectives: objectivesDoc?.value || {}, lastExecutions: {}, collateral };
+    const intents = await evaluateRulesTick(db, ctx);
+    res.json({ ok: true, intents: intents.length, sample: intents.slice(0, 3) });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -609,7 +640,7 @@ app.get('/rotation/policy/:service', async (req, res) => {
   }
 });
 
-app.put('/rotation/policy/:service', async (req, res) => {
+app.put('/rotation/policy/:service', ownerAuth, async (req, res) => {
   try {
     const { service } = req.params;
     const policy = { service: service as CredentialService, ...req.body };
@@ -620,7 +651,7 @@ app.put('/rotation/policy/:service', async (req, res) => {
   }
 });
 
-app.post('/rotation/rotate/:service', async (req, res) => {
+app.post('/rotation/rotate/:service', ownerAuth, async (req, res) => {
   try {
     const { service } = req.params;
     const result = await rotateAPIKey(db, service as CredentialService);
@@ -639,7 +670,7 @@ app.get('/rotation/scheduler', async (_req, res) => {
   }
 });
 
-app.post('/rotation/scheduler/check', async (_req, res) => {
+app.post('/rotation/scheduler/check', ownerAuth, async (_req, res) => {
   try {
     await forceRotationCheck(db);
     res.json({ ok: true, message: 'Rotation check triggered' });
@@ -860,8 +891,21 @@ app.get('/live', (req, res) => {
 
 const port = Number(process.env.API_PORT || process.env.PORT || 3001);
 
+// Simple owner auth middleware: checks X-Owner-Id header against OWNER_ID
+function ownerAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const env = getEnv();
+  if (!env.OWNER_ID) return res.status(403).json({ error: 'Owner protection not configured' });
+  const header = (req.headers['x-owner-id'] || req.headers['x-owner'] || req.headers['x-user-id']) as string | undefined;
+  if (header === env.OWNER_ID) return next();
+  return res.status(401).json({ error: 'Unauthorized' });
+}
+
 async function startServer() {
-  console.log('🚀 Starting CoinRuler API server...');
+  getLogger({ svc: 'api' }).info('Starting CoinRuler API server...');
+  let rulesInterval: NodeJS.Timeout | null = null;
+  let perfInterval: NodeJS.Timeout | null = null;
+  let diagInterval: NodeJS.Timeout | null = null;
+  let nightlyTimeout: NodeJS.Timeout | null = null;
   
   // Connect MongoDB first (non-blocking with reduced timeout)
   const connectPromise = connectMongoDB();
@@ -873,15 +917,17 @@ async function startServer() {
   await Promise.race([connectPromise, timeoutPromise]);
   
   // Start listening regardless of MongoDB status
-  app.listen(port, async () => {
-    console.log(`✅ API listening on :${port}`);
-    console.log(`📡 Health: http://localhost:${port}/health`);
-  console.log(`🧪 Full Health: http://localhost:${port}/health/full`);
-    console.log(`🌐 CORS origin: ${WEB_ORIGIN}`);
+  const server = app.listen(port, async () => {
+    const log = getLogger({ svc: 'api' });
+    log.info(`API listening on :${port}`);
+    log.info(`Health: http://localhost:${port}/health`);
+    log.info(`Full Health: http://localhost:${port}/health/full`);
+    log.info(`CORS origin: ${WEB_ORIGIN}`);
     
     if (!db) {
-      console.warn('⚠️  MongoDB not connected - many features will be unavailable');
-      console.warn('⚠️  Troubleshooting: https://www.mongodb.com/docs/atlas/troubleshoot-connection/');
+  const log = getLogger({ svc: 'api' });
+  log.warn('MongoDB not connected - many features will be unavailable');
+  log.warn('Troubleshooting: https://www.mongodb.com/docs/atlas/troubleshoot-connection/');
     }
     
     // Start credential rotation scheduler if DB is ready
@@ -893,19 +939,22 @@ async function startServer() {
           notifyOnRotation: true,
           notifyOnFailure: true,
         });
-        console.log('✅ Rotation scheduler started');
+        getLogger({ svc: 'api' }).info('Rotation scheduler started');
       } catch (err: any) {
-        console.warn('⚠️  Rotation scheduler failed to start:', err?.message || err);
+        getLogger({ svc: 'api' }).warn({ err: err?.message || err }, 'Rotation scheduler failed to start');
       }
     } else {
-      console.warn('⚠️  Rotation scheduler skipped (MongoDB not connected)');
+      getLogger({ svc: 'api' }).warn('Rotation scheduler skipped (MongoDB not connected)');
     }
 
     // Rules evaluator scheduler (lightweight, minute cadence)
-    console.log('⏰ Starting rules evaluator (60s interval)...');
-    setInterval(async () => {
+  getLogger({ svc: 'api' }).info('Starting rules evaluator (60s interval)...');
+  rulesInterval = setInterval(async () => {
       if (!db) return;
       try {
+        // Respect kill-switch: skip evaluation when enabled
+        const ks = await db.collection('kill_switch').findOne({});
+        if (ks?.enabled) return;
         const objectivesDoc = await db.collection('objectives').findOne({ key: 'owner' });
         // Minimal portfolio snapshot
         const latest = await db.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
@@ -964,8 +1013,8 @@ async function startServer() {
     }, 60_000);
     
     // Performance monitoring scheduler (5 minute cadence)
-      console.log('📊 Starting performance monitor (5m interval)...');
-      setInterval(async () => {
+  getLogger({ svc: 'api' }).info('Starting performance monitor (5m interval)...');
+  perfInterval = setInterval(async () => {
         if (!db) return;
         try {
           // Check rule performance for alerts
@@ -1034,8 +1083,8 @@ async function startServer() {
       }, 5 * 60 * 1000);
     
       // System diagnostics writer (5 minute cadence)
-      console.log('🩺 Starting diagnostics writer (5m interval)...');
-      setInterval(async () => {
+  getLogger({ svc: 'api' }).info('Starting diagnostics writer (5m interval)...');
+  diagInterval = setInterval(async () => {
         if (!db) return;
         try {
           const health = await (await fetch(`http://localhost:${port}/health/full`)).json();
@@ -1046,20 +1095,19 @@ async function startServer() {
       }, 5 * 60 * 1000);
 
       // Nightly optimizer (runs at 2 AM UTC)
-      console.log('🤖 Scheduling nightly optimizer...');
+  getLogger({ svc: 'api' }).info('Scheduling nightly optimizer...');
       const scheduleNextOptimization = () => {
         const now = new Date();
         const next = new Date(now);
         next.setUTCHours(2, 0, 0, 0);
         if (next <= now) next.setDate(next.getDate() + 1);
         const delay = next.getTime() - now.getTime();
-      
-        setTimeout(async () => {
-          console.log('🤖 Running nightly optimization cycle...');
+        nightlyTimeout = setTimeout(async () => {
+          getLogger({ svc: 'api' }).info('Running nightly optimization cycle...');
           if (db) {
             try {
               const results = await runOptimizationCycle(db, {});
-              console.log(`✅ Optimization complete: ${results.length} candidates generated`);
+              getLogger({ svc: 'api' }).info(`Optimization complete: ${results.length} candidates generated`);
               if (results.length > 0) {
                 liveEvents.emit('alert', {
                   type: 'optimization',
@@ -1070,7 +1118,7 @@ async function startServer() {
                 });
               }
             } catch (err: any) {
-              console.error('Optimization error:', err.message);
+              getLogger({ svc: 'api' }).error({ err: err?.message }, 'Optimization error');
             }
           }
           scheduleNextOptimization();
@@ -1078,20 +1126,34 @@ async function startServer() {
       };
       scheduleNextOptimization();
     
-    console.log('✅ API fully initialized and ready for requests');
+    getLogger({ svc: 'api' }).info('API fully initialized and ready for requests');
   });
+
+  // Graceful shutdown
+  const shutdown = async (signal: string) => {
+    console.log(`\n${signal} received. Shutting down gracefully...`);
+    try { await stopRotationScheduler(); } catch {}
+    try { server.close(); } catch {}
+    try { clearInterval(rulesInterval as any); } catch {}
+    try { clearInterval(perfInterval as any); } catch {}
+    try { clearInterval(diagInterval as any); } catch {}
+    try { if (nightlyTimeout) clearTimeout(nightlyTimeout); } catch {}
+    process.exit(0);
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
 
 // Start the server
 startServer().catch((err) => {
-  console.error('❌ Fatal startup error:', err);
+  getLogger({ svc: 'api' }).error({ err }, 'Fatal startup error');
   process.exit(1);
 });
 
 // Safety: prevent process exit on unexpected errors
 process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err);
+  getLogger({ svc: 'api' }).error({ err }, 'Uncaught exception');
 });
 process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled rejection:', reason);
+  getLogger({ svc: 'api' }).error({ reason }, 'Unhandled rejection');
 });
