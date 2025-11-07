@@ -5,6 +5,7 @@ import { ToastContainer } from './components/Toast';
 import { SessionProvider } from "next-auth/react";
 import { auth } from "@/auth";
 import { LogoutButton } from "./components/LogoutButton";
+import { WelcomeModal } from "./components/WelcomeModal";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -53,6 +54,9 @@ export default async function RootLayout({
           <div className="max-w-5xl mx-auto">
             {children}
           </div>
+          {session && (
+            <WelcomeModal />
+          )}
         </SessionProvider>
       </body>
     </html>

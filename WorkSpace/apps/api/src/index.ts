@@ -66,6 +66,7 @@ if (typeof WebSocket !== 'undefined') {
 
 // Real-time event emitter for SSE
 const liveEvents = new EventEmitter();
+let sseClientCount = 0;
 liveEvents.setMaxListeners(100); // Support many concurrent SSE clients
 
 const app = express();
@@ -132,6 +133,36 @@ async function connectMongoDB() {
 
 // Health check
 app.get('/health', (_req, res) => res.json({ ok: true, db: db ? 'connected' : 'disconnected' }));
+
+// Full system diagnostics
+app.get('/health/full', async (_req, res) => {
+  const checks: any = {
+    time: new Date().toISOString(),
+    dbConnected: !!db,
+    sseClients: sseClientCount,
+    lastRuleExecutions: Object.keys(lastRuleExecutions || {}).length,
+  };
+  try {
+    if (db) {
+      // Mongo ping and quick counts
+      await db.command({ ping: 1 });
+      checks.mongodb = 'ok';
+      checks.counts = {
+        approvals: await db.collection('approvals').countDocuments({ status: 'pending' }),
+        rules: await db.collection('rules').countDocuments({ enabled: true }),
+        snapshots: await db.collection('snapshots').countDocuments(),
+        alerts24h: await db.collection('alerts')?.countDocuments?.({ ts: { $gt: new Date(Date.now() - 24*60*60*1000) } }).catch?.(() => undefined),
+      };
+      // Kill-switch status
+      const ks = await db.collection('state').findOne({ key: 'killSwitch' });
+      checks.killSwitch = ks?.value || { enabled: false };
+    }
+  } catch (err: any) {
+    checks.mongodb = 'error';
+    checks.error = err.message;
+  }
+  res.json(checks);
+});
 
 // Status
 app.get('/status', (_req, res) => res.json({ status: 'running', ts: new Date().toISOString() }));
@@ -625,6 +656,8 @@ app.get('/live', (req, res) => {
 
   res.flushHeaders();
 
+  // Track client
+  sseClientCount += 1;
   // Send initial connection event
   res.write(`data: ${JSON.stringify({ type: 'connected', ts: new Date().toISOString() })}\n\n`);
 
@@ -648,6 +681,7 @@ app.get('/live', (req, res) => {
   req.on('close', () => {
     clearInterval(heartbeat);
     Object.entries(handlers).forEach(([event, handler]) => liveEvents.removeListener(event, handler));
+    sseClientCount = Math.max(0, sseClientCount - 1);
   });
 });
 
@@ -669,6 +703,7 @@ async function startServer() {
   app.listen(port, async () => {
     console.log(`✅ API listening on :${port}`);
     console.log(`📡 Health: http://localhost:${port}/health`);
+  console.log(`🧪 Full Health: http://localhost:${port}/health/full`);
     console.log(`🌐 CORS origin: ${WEB_ORIGIN}`);
     
     // Start credential rotation scheduler if DB is ready
@@ -740,7 +775,7 @@ async function startServer() {
       }
     }, 60_000);
     
-      // Performance monitoring scheduler (5 minute cadence)
+    // Performance monitoring scheduler (5 minute cadence)
       console.log('📊 Starting performance monitor (5m interval)...');
       setInterval(async () => {
         if (!db) return;
@@ -810,6 +845,18 @@ async function startServer() {
         }
       }, 5 * 60 * 1000);
     
+      // System diagnostics writer (5 minute cadence)
+      console.log('🩺 Starting diagnostics writer (5m interval)...');
+      setInterval(async () => {
+        if (!db) return;
+        try {
+          const health = await (await fetch(`http://localhost:${port}/health/full`)).json();
+          await db.collection('systemHealth').insertOne({ ...health, ts: new Date() });
+        } catch {
+          // ignore
+        }
+      }, 5 * 60 * 1000);
+
       // Nightly optimizer (runs at 2 AM UTC)
       console.log('🤖 Scheduling nightly optimizer...');
       const scheduleNextOptimization = () => {
