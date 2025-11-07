@@ -109,6 +109,14 @@ app.use(express.json());
 app.use(morgan('dev'));
 app.use(rateLimit({ windowMs: 60_000, max: 60 }));
 
+// Lightweight mode flag to disable background schedulers & heavy tasks (for debugging deploy 502s)
+const LIGHT_MODE = process.env.LIGHT_MODE === 'true';
+
+// Root ping for platform health probes
+app.get('/', (_req, res) => {
+  res.type('text/plain').send('coinruler-api:ok');
+});
+
 let db: Db | null = null;
 let lastRuleExecutions: Record<string, Date> = {};
 
@@ -1162,26 +1170,31 @@ async function startServer() {
   log.warn('Troubleshooting: https://www.mongodb.com/docs/atlas/troubleshoot-connection/');
     }
     
-    // Start credential rotation scheduler if DB is ready
-    if (db) {
-      try {
-        await startRotationScheduler(db, {
-          checkIntervalHours: 24,
-          enabled: process.env.ROTATION_SCHEDULER_ENABLED !== 'false',
-          notifyOnRotation: true,
-          notifyOnFailure: true,
-        });
-        getLogger({ svc: 'api' }).info('Rotation scheduler started');
-      } catch (err: any) {
-        getLogger({ svc: 'api' }).warn({ err: err?.message || err }, 'Rotation scheduler failed to start');
+    // Start credential rotation scheduler if DB is ready and not in LIGHT_MODE
+    if (!LIGHT_MODE) {
+      if (db) {
+        try {
+          await startRotationScheduler(db, {
+            checkIntervalHours: 24,
+            enabled: process.env.ROTATION_SCHEDULER_ENABLED !== 'false',
+            notifyOnRotation: true,
+            notifyOnFailure: true,
+          });
+          getLogger({ svc: 'api' }).info('Rotation scheduler started');
+        } catch (err: any) {
+          getLogger({ svc: 'api' }).warn({ err: err?.message || err }, 'Rotation scheduler failed to start');
+        }
+      } else {
+        getLogger({ svc: 'api' }).warn('Rotation scheduler skipped (MongoDB not connected)');
       }
     } else {
-      getLogger({ svc: 'api' }).warn('Rotation scheduler skipped (MongoDB not connected)');
+      getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: rotation scheduler disabled');
     }
 
-    // Rules evaluator scheduler (lightweight, minute cadence)
-  getLogger({ svc: 'api' }).info('Starting rules evaluator (60s interval)...');
-  rulesInterval = setInterval(async () => {
+    // Rules evaluator scheduler (disabled in LIGHT_MODE)
+    if (!LIGHT_MODE) {
+      getLogger({ svc: 'api' }).info('Starting rules evaluator (60s interval)...');
+      rulesInterval = setInterval(async () => {
       if (!db) return;
       try {
         // Respect kill-switch: skip evaluation when enabled
@@ -1242,11 +1255,15 @@ async function startServer() {
       } catch (err) {
         // Silent fail for rule evaluation (non-critical)
       }
-    }, 60_000);
+      }, 60_000);
+    } else {
+      getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: rules evaluator disabled');
+    }
     
-    // Performance monitoring scheduler (5 minute cadence)
-  getLogger({ svc: 'api' }).info('Starting performance monitor (5m interval)...');
-  perfInterval = setInterval(async () => {
+    // Performance monitoring scheduler (disabled in LIGHT_MODE)
+    if (!LIGHT_MODE) {
+      getLogger({ svc: 'api' }).info('Starting performance monitor (5m interval)...');
+      perfInterval = setInterval(async () => {
         if (!db) return;
         try {
           // Check rule performance for alerts
@@ -1312,22 +1329,30 @@ async function startServer() {
         } catch (err) {
           // Silent fail for monitoring
         }
-      }, 5 * 60 * 1000);
+        }, 5 * 60 * 1000);
+      } else {
+        getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: performance monitor disabled');
+      }
     
-      // System diagnostics writer (5 minute cadence)
-  getLogger({ svc: 'api' }).info('Starting diagnostics writer (5m interval)...');
-  diagInterval = setInterval(async () => {
-        if (!db) return;
-        try {
-          const health = await (await fetch(`http://localhost:${port}/health/full`)).json();
-          await db.collection('systemHealth').insertOne({ ...health, ts: new Date() });
-        } catch {
-          // ignore
-        }
-      }, 5 * 60 * 1000);
+      // System diagnostics writer (disabled in LIGHT_MODE)
+    if (!LIGHT_MODE) {
+      getLogger({ svc: 'api' }).info('Starting diagnostics writer (5m interval)...');
+      diagInterval = setInterval(async () => {
+          if (!db) return;
+          try {
+            const health = await (await fetch(`http://localhost:${port}/health/full`)).json();
+            await db.collection('systemHealth').insertOne({ ...health, ts: new Date() });
+          } catch {
+            // ignore
+          }
+        }, 5 * 60 * 1000);
+    } else {
+      getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: diagnostics writer disabled');
+    }
 
-      // Nightly optimizer (runs at 2 AM UTC)
-  getLogger({ svc: 'api' }).info('Scheduling nightly optimizer...');
+      // Nightly optimizer (disabled in LIGHT_MODE)
+    if (!LIGHT_MODE) {
+      getLogger({ svc: 'api' }).info('Scheduling nightly optimizer...');
       const scheduleNextOptimization = () => {
         const now = new Date();
         const next = new Date(now);
@@ -1357,6 +1382,9 @@ async function startServer() {
         }, delay);
       };
       scheduleNextOptimization();
+    } else {
+      getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: nightly optimizer disabled');
+    }
     
     getLogger({ svc: 'api' }).info('API fully initialized and ready for requests');
   });
