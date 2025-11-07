@@ -9,8 +9,10 @@ import { z } from 'zod';
 
 const EnvSchema = z.object({
   NODE_ENV: z.string().default('development'),
-  MONGODB_URI: z.string().min(1, 'MONGODB_URI required'),
-  DATABASE_NAME: z.string().min(1, 'DATABASE_NAME required'),
+  // Make Mongo optional so API can start in degraded mode (will retry / warn)
+  MONGODB_URI: z.string().optional(),
+  // Provide default database name to prevent hard failure when unset
+  DATABASE_NAME: z.string().default('coinruler'),
   // Discord token now optional: bot runs in disabled mode if absent
   DISCORD_BOT_TOKEN: z.string().optional(),
   // Coinbase keys now optional: if absent, integration runs in disabled mode
@@ -40,6 +42,11 @@ export function validateEnv(): Env {
     throw new Error('Invalid environment configuration');
   }
   cached = parsed.data as Env;
+  // Backfill defaults if omitted
+  if (!cached.MONGODB_URI) {
+    // Use local fallback; in production this will simply fail to connect and run degraded
+    cached.MONGODB_URI = 'mongodb://localhost:27017';
+  }
   // Hard safety: force DRY_RUN true unless explicitly set false AND OWNER_ID present
   if (cached.DRY_RUN !== 'false') {
     cached.DRY_RUN = 'true';
