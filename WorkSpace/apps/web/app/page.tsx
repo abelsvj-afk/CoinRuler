@@ -24,6 +24,7 @@ type HealthResponse = {
 export default function HomePage() {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [portfolio, setPortfolio] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
   const apiBase = getApiBase();
@@ -34,23 +35,26 @@ export default function HomePage() {
 
     const fetchData = async () => {
       try {
-        const [healthRes, dashRes] = await Promise.all([
+        const [healthRes, dashRes, portfolioRes] = await Promise.all([
           fetch(`${apiBase}/health`, { cache: "no-store" }),
-          fetch(`${apiBase}/dashboard`, { cache: "no-store" })
+          fetch(`${apiBase}/dashboard`, { cache: "no-store" }),
+          fetch(`${apiBase}/portfolio/current`, { cache: "no-store" })
         ]);
         
-        if (!healthRes.ok || !dashRes.ok) {
-          throw new Error(`API responded with status ${healthRes.status}/${dashRes.status}`);
+        if (!healthRes.ok || !dashRes.ok || !portfolioRes.ok) {
+          throw new Error(`API responded with status ${healthRes.status}/${dashRes.status}/${portfolioRes.status}`);
         }
 
-        const [healthJson, dashJson] = await Promise.all([
+        const [healthJson, dashJson, portfolioJson] = await Promise.all([
           healthRes.json(),
-          dashRes.json()
+          dashRes.json(),
+          portfolioRes.json()
         ]);
 
         if (isMounted) {
           setHealth(healthJson);
           setData(dashJson);
+          setPortfolio(portfolioJson);
           setApiError(null);
         }
       } catch (e: any) {
@@ -130,10 +134,28 @@ export default function HomePage() {
     );
   }
 
-  const portfolio = data?.portfolio || {};
+  const legacyPortfolio = data?.portfolio || {};
   const approvals = data?.approvals || [];
   const killSwitch = data?.killSwitch || { enabled: false, reason: "" };
   const reports = data?.reports || [];
+  
+  // Use /portfolio/current for real balances
+  const balances = portfolio?.balances || {};
+  const prices = portfolio?.prices || {};
+  const totalValueUSD = portfolio?.totalValueUSD || 0;
+  const baselines = portfolio?.baselines || {};
+  const xrpAboveBaseline = portfolio?.xrpAboveBaseline || 0;
+  const btcFree = portfolio?.btcFree || 0;
+  const hasData = portfolio?.hasData || false;
+  const updatedAt = portfolio?.updatedAt;
+  const ageMs = portfolio?.ageMs;
+  
+  // Data freshness indicator
+  const isFresh = ageMs !== null && ageMs < 120000; // < 2 min
+  const isStale = ageMs !== null && ageMs > 300000; // > 5 min
+  const ageLabel = updatedAt 
+    ? `Updated: ${new Date(updatedAt).toLocaleTimeString()} (${Math.floor((ageMs || 0) / 1000)}s ago)`
+    : "No data yet";
 
   return (
     <div className="min-h-screen p-8">
@@ -174,12 +196,22 @@ export default function HomePage() {
         )}
       </motion.div>
 
+      {/* Data Freshness */}
+      {hasData && (
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-4">
+          <div className={`glass rounded-lg px-4 py-2 inline-flex items-center gap-2 text-sm ${isFresh ? 'text-green-400' : isStale ? 'text-red-400' : 'text-yellow-400'}`}>
+            <div className={`w-2 h-2 rounded-full ${isFresh ? 'bg-green-400 animate-pulse' : isStale ? 'bg-red-400' : 'bg-yellow-400'}`} />
+            {ageLabel}
+          </div>
+        </motion.div>
+      )}
+
       {/* Stats */}
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <StatCard label="Total Value" value={`$${(((portfolio.BTC || 0) * (portfolio._prices?.BTC || 0)) + (portfolio.USDC || 0)).toFixed(2)}`} change={5.2} trend="up" icon={<DollarSign className="w-5 h-5 text-[#FFB800]" />} />
-        <StatCard label="BTC Holdings" value={(portfolio.BTC || 0).toFixed(8)} change={2.1} trend="up" icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
+        <StatCard label="Total Value" value={`$${totalValueUSD.toFixed(2)}`} change={5.2} trend="up" icon={<DollarSign className="w-5 h-5 text-[#FFB800]" />} />
+        <StatCard label="BTC Holdings" value={`${btcFree.toFixed(8)}`} change={2.1} trend="up" icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
         <StatCard label="Active Trades" value={approvals.length} icon={<Activity className="w-5 h-5 text-[#FFB800]" />} />
-        <StatCard label="System Status" value={killSwitch.enabled ? "Halted" : "Active"} icon={<Shield className="w-5 h-5 text-[#FFB800]" />} />
+        <StatCard label="System Status" value={killSwitch.enabled ? "Halted" : hasData ? "Active" : "No Data"} icon={<Shield className="w-5 h-5 text-[#FFB800]" />} />
       </motion.div>
 
       {/* Main grid */}
@@ -194,28 +226,62 @@ export default function HomePage() {
               </div>
             </div>
 
-            {portfolio && (portfolio.BTC || portfolio.XRP || portfolio.USDC) ? (
+            {hasData ? (
               <div className="space-y-4">
-                <div className="glass rounded-lg p-4">
-                  <div className="flex justify-between items-center"><span className="text-white/60">BTC</span><span className="font-mono font-bold text-lg">{portfolio.BTC?.toFixed(8) || "0.00000000"}</span></div>
-                  {portfolio._prices?.BTC && (<div className="text-sm text-white/40 mt-1">${(portfolio.BTC * portfolio._prices.BTC).toFixed(2)} USD</div>)}
-                </div>
+                {balances.BTC !== undefined && (
+                  <div className="glass rounded-lg p-4">
+                    <div className="flex justify-between items-center">
+                      <span className="text-white/60">BTC</span>
+                      <span className="font-mono font-bold text-lg">{balances.BTC.toFixed(8)}</span>
+                    </div>
+                    {prices.BTC && <div className="text-sm text-white/40 mt-1">${(balances.BTC * prices.BTC).toFixed(2)} USD</div>}
+                    {baselines.BTC?.baseline !== undefined && (
+                      <div className="text-xs text-white/30 mt-1">Baseline: {baselines.BTC.baseline.toFixed(8)} BTC</div>
+                    )}
+                  </div>
+                )}
 
-                <div className="glass rounded-lg p-4">
-                  <div className="flex justify-between items-center"><span className="text-white/60">XRP</span><span className="font-mono font-bold text-lg">{portfolio.XRP?.toFixed(2) || "0.00"}</span></div>
-                  {portfolio._prices?.XRP && (<div className="text-sm text-white/40 mt-1">${(portfolio.XRP * portfolio._prices.XRP).toFixed(2)} USD</div>)}
-                </div>
+                {balances.XRP !== undefined && (
+                  <div className="glass rounded-lg p-4">
+                    <div className="flex justify-between items-center">
+                      <span className="text-white/60">XRP</span>
+                      <span className="font-mono font-bold text-lg">{balances.XRP.toFixed(2)}</span>
+                    </div>
+                    {prices.XRP && <div className="text-sm text-white/40 mt-1">${(balances.XRP * prices.XRP).toFixed(2)} USD</div>}
+                    {baselines.XRP?.baseline !== undefined && (
+                      <div className="text-xs text-white/30 mt-1">
+                        Baseline: {baselines.XRP.baseline.toFixed(2)} XRP 
+                        {xrpAboveBaseline > 0 && <span className="text-green-400 ml-2">+{xrpAboveBaseline.toFixed(2)} above</span>}
+                      </div>
+                    )}
+                  </div>
+                )}
 
-                <div className="glass rounded-lg p-4">
-                  <div className="flex justify-between items-center"><span className="text-white/60">USDC</span><span className="font-mono font-bold text-lg">${portfolio.USDC?.toFixed(2) || "0.00"}</span></div>
-                </div>
+                {balances.USDC !== undefined && (
+                  <div className="glass rounded-lg p-4">
+                    <div className="flex justify-between items-center">
+                      <span className="text-white/60">USDC</span>
+                      <span className="font-mono font-bold text-lg">${balances.USDC.toFixed(2)}</span>
+                    </div>
+                  </div>
+                )}
 
-                {portfolio._prices && (
+                {Object.keys(balances).filter(c => !['BTC','XRP','USDC'].includes(c)).map(coin => (
+                  <div key={coin} className="glass rounded-lg p-4">
+                    <div className="flex justify-between items-center">
+                      <span className="text-white/60">{coin}</span>
+                      <span className="font-mono font-bold text-lg">{balances[coin].toFixed(4)}</span>
+                    </div>
+                    {prices[coin] && <div className="text-sm text-white/40 mt-1">${(balances[coin] * prices[coin]).toFixed(2)} USD</div>}
+                  </div>
+                ))}
+
+                {Object.keys(prices).length > 0 && (
                   <div className="glass rounded-lg p-4">
                     <div className="text-sm text-white/60 mb-2">Prices (USD)</div>
                     <div className="text-xs text-white/50 space-y-1">
-                      {Object.entries(portfolio._prices).map(([coin, price]) => (
-                        <div key={coin} className="flex justify-between"><span>{coin}:</span><span className="font-mono">${(price as number).toFixed?.(2) ?? price}</span></div>
+                      {Object.entries(prices).map(([coin, price]) => (
+                        <div key={coin} className="flex justify-between"><span>{coin}:</span><span className="font-mono">${(price as number).toFixed(2)}</span></div>
                       ))}
                     </div>
                   </div>
@@ -224,7 +290,8 @@ export default function HomePage() {
             ) : (
               <div className="text-center py-8">
                 <Shield className="w-12 h-12 text-white/20 mx-auto mb-3" />
-                <p className="text-white/40">No portfolio data available</p>
+                <p className="text-white/40 mb-2">No portfolio data available</p>
+                <p className="text-[10px] text-white/30">Set Coinbase credentials on Railway or create a snapshot</p>
               </div>
             )}
           </div>

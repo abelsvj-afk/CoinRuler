@@ -403,6 +403,45 @@ app.post('/portfolio/snapshot', ownerAuth, async (req, res) => {
   }
 });
 
+// Force snapshot creation from live Coinbase balances (no auth required for testing)
+app.post('/portfolio/snapshot/force', async (req, res) => {
+  if (!db) return res.status(503).json({ error: 'Database not connected' });
+  try {
+    if (!hasCoinbaseCredentials()) {
+      return res.status(400).json({ error: 'Coinbase credentials not configured' });
+    }
+    
+    const client = getCoinbaseApiClient();
+    const balances = await client.getAllBalances();
+    const prices = await client.getSpotPrices(Object.keys(balances));
+    
+    const snapshot = {
+      ...balances,
+      _prices: prices,
+      timestamp: new Date(),
+      reason: 'force-refresh',
+    };
+    
+    await db.collection('snapshots').insertOne(snapshot);
+    
+    // Initialize baselines if not present
+    const baselineDoc = await db.collection('baselines').findOne({ key: 'owner' });
+    if (!baselineDoc) {
+      const baselines = {
+        BTC: { baseline: balances.BTC || 0 },
+        XRP: { baseline: Math.max(10, balances.XRP || 0) }
+      };
+      await db.collection('baselines').insertOne({ key: 'owner', value: baselines, createdAt: new Date() });
+    }
+    
+    liveEvents.emit('portfolio:snapshot', { snapshot, reason: 'force-refresh' });
+    
+    res.json({ ok: true, snapshot, message: 'Snapshot created from live Coinbase data' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Portfolio comparison (detect significant changes)
 app.get('/portfolio/changes', async (req, res) => {
   if (!db) return res.status(503).json({ error: 'Database not connected' });
