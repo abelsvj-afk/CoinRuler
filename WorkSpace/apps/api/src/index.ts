@@ -477,6 +477,156 @@ app.get('/dashboard', async (_req, res) => {
   }
 });
 
+// Current portfolio with balances, USD value, freshness & baselines
+app.get('/portfolio/current', async (_req, res) => {
+  try {
+    const latest = await db?.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
+    let balances: Record<string, number> = {};
+    let prices: Record<string, number> = {};
+    let usdTotal = 0;
+    if (latest) {
+      prices = (latest as any)._prices || {};
+      for (const k of Object.keys(latest)) {
+        if (['_id','_prices','timestamp','reason'].includes(k)) continue;
+        const qty = (latest as any)[k];
+        if (typeof qty === 'number') {
+          balances[k] = qty;
+          usdTotal += qty * (prices[k] || 0);
+        }
+      }
+    } else if (hasCoinbaseCredentials()) {
+      // Fallback to live fetch if no snapshot exists yet
+      try {
+        const client = getCoinbaseApiClient();
+        balances = await client.getAllBalances();
+        prices = await client.getSpotPrices(Object.keys(balances));
+        for (const c of Object.keys(balances)) usdTotal += (balances[c] || 0) * (prices[c] || 0);
+      } catch {}
+    }
+    // Baselines seed
+    const baselineDoc = await db?.collection('baselines').findOne({ key: 'owner' });
+    let baselines = baselineDoc?.value || { BTC: { baseline: balances.BTC || 0 }, XRP: { baseline: Math.max(10, balances.XRP || 0) } };
+    if (!baselineDoc && db) {
+      await db.collection('baselines').insertOne({ key: 'owner', value: baselines, createdAt: new Date() });
+    }
+    const ts = latest?.timestamp || null;
+    const ageMs = ts ? Date.now() - new Date(ts).getTime() : null;
+    res.json({
+      balances,
+      prices,
+      totalValueUSD: Number(usdTotal.toFixed(2)),
+      baselines,
+      xrpAboveBaseline: balances.XRP && baselines.XRP?.baseline ? Math.max(0, balances.XRP - baselines.XRP.baseline) : 0,
+      btcFree: balances.BTC || 0, // collateral lock handled separately
+      updatedAt: ts,
+      ageMs,
+      hasData: Object.keys(balances).length > 0,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Raw balances (live fetch if credentials present, else from snapshot)
+app.get('/balances', async (_req, res) => {
+  try {
+    let live: Record<string, number> = {};
+    let prices: Record<string, number> = {};
+    let source: 'live' | 'snapshot' = 'snapshot';
+    if (hasCoinbaseCredentials()) {
+      try {
+        const client = getCoinbaseApiClient();
+        live = await client.getAllBalances();
+        prices = await client.getSpotPrices(Object.keys(live));
+        source = 'live';
+      } catch (e: any) {
+        // fallback to snapshot
+      }
+    }
+    if (!Object.keys(live).length) {
+      const latest = await db?.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
+      if (latest) {
+        for (const k of Object.keys(latest)) {
+          if (['_id','_prices','timestamp','reason'].includes(k)) continue;
+          const qty = (latest as any)[k];
+          if (typeof qty === 'number') live[k] = qty;
+        }
+        prices = (latest as any)._prices || {};
+      }
+    }
+    let totalUSD = 0;
+    for (const c of Object.keys(live)) totalUSD += live[c] * (prices[c] || 0);
+    res.json({ balances: live, prices, totalUSD: Number(totalUSD.toFixed(2)), source });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Pending approvals (explicit endpoint)
+app.get('/approvals/pending', async (_req, res) => {
+  try {
+    const items = await db?.collection('approvals').find({ status: 'pending' }).sort({ createdAt: -1 }).limit(50).toArray() || [];
+    res.json({ count: items.length, items });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Simple projection endpoint combining Monte Carlo & placeholder ML confidence
+app.get('/analysis/projection', async (_req, res) => {
+  try {
+    const latest = await db?.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
+    const balances: Record<string, number> = {};
+    const prices: Record<string, number> = (latest as any)?._prices || {};
+    if (latest) {
+      for (const k of Object.keys(latest)) {
+        if (['_id','_prices','timestamp','reason'].includes(k)) continue;
+        const qty = (latest as any)[k];
+        if (typeof qty === 'number') balances[k] = qty;
+      }
+    }
+    // Monte Carlo on portfolio value (aggregate)
+    const portfolioValue: Record<string, number> = {};
+    for (const c of Object.keys(balances)) portfolioValue[c] = balances[c] * (prices[c] || 0);
+  const sims = monteCarloSimulation(portfolioValue as any, 1000, 30);
+    // Placeholder ML confidence: higher if BTC & USDC present
+    const mlConfidence = (balances.BTC ? 0.4 : 0) + (balances.USDC ? 0.3 : 0) + (balances.XRP ? 0.2 : 0);
+    const confidence = Math.min(0.95, 0.1 + mlConfidence);
+    res.json({
+      monteCarlo: sims,
+      confidence,
+      summary: {
+        mean: sims.mean,
+        median: sims.median,
+        p5: sims.percentile_5,
+        p95: sims.percentile_95,
+        samples: sims.outcomes?.length || 0,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Daily reports (stub) - last 7 days from reports collection
+app.get('/report/daily', async (_req, res) => {
+  try {
+    const docs = await db?.collection('reports').find({}).sort({ createdAt: -1 }).limit(50).toArray() || [];
+    // Group by date
+    const grouped: Record<string, any[]> = {};
+    for (const r of docs) {
+      const d = new Date(r.createdAt || r.timestamp || Date.now()).toISOString().slice(0,10);
+      grouped[d] = grouped[d] || [];
+      grouped[d].push(r);
+    }
+    const daily = Object.entries(grouped).slice(0,7).map(([day, items]) => ({ day, count: items.length, samples: items.slice(0,3) }));
+    res.json({ days: daily });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Objectives (owner portfolio and policy) endpoints
 app.get('/objectives', async (_req, res) => {
   if (!db) return res.status(503).json({ error: 'Database not connected' });

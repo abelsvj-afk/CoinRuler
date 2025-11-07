@@ -1,5 +1,11 @@
 export function getApiBase() {
   // Prefer server-side env var; fallback to public or local dev
+  if (typeof window !== 'undefined') {
+    const override = localStorage.getItem('override_api_base');
+    if (override && override.startsWith('http')) {
+      return override.replace(/\/$/, '');
+    }
+  }
   const base = process.env.API_BASE || process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:3001';
   return base.replace(/\/$/, '');
 }

@@ -99,6 +99,28 @@ export default function HomePage() {
             <p className="text-xs text-white/40 mb-4">
               Make sure your API is running and NEXT_PUBLIC_API_BASE is set correctly.
             </p>
+            <div className="space-y-2 mb-4">
+              <input
+                placeholder="Paste API URL (https://...)"
+                className="w-full rounded px-3 py-2 text-sm bg-black/30 border border-white/10 focus:outline-none focus:border-[#FFB800]"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const val = (e.target as HTMLInputElement).value.trim();
+                    if (val.startsWith('http')) {
+                      localStorage.setItem('override_api_base', val.replace(/\/$/, ''));
+                      window.location.reload();
+                    }
+                  }
+                }}
+              />
+              <p className="text-[10px] text-white/40">Temporary override saved to localStorage. Press Enter to apply.</p>
+              {typeof window !== 'undefined' && localStorage.getItem('override_api_base') && (
+                <div className="text-[10px] text-white/50">Override active: {localStorage.getItem('override_api_base')}</div>
+              )}
+              {typeof window !== 'undefined' && localStorage.getItem('override_api_base') && (
+                <Button variant="ghost" size="sm" onClick={() => { localStorage.removeItem('override_api_base'); window.location.reload(); }}>Clear Override</Button>
+              )}
+            </div>
             <Button variant="primary" onClick={() => window.location.reload()}>
               Retry Connection
             </Button>
