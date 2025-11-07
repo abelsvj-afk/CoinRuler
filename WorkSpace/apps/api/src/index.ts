@@ -7,7 +7,7 @@ import rateLimit from 'express-rate-limit';
 import { MongoClient, Db, ObjectId } from 'mongodb';
 import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation } from '@coinruler/shared';
 // Lazy import of rules package (monorepo build order safety)
-import { parseRule, createRule as createRuleDoc, listRules as listRuleDocs, setRuleEnabled, evaluateRulesTick, type EvalContext, type RuleSpec } from '@coinruler/rules';
+import { parseRule, createRule as createRuleDoc, listRules as listRuleDocs, setRuleEnabled, evaluateRulesTick, runOptimizationCycle, backtestRule, getRiskState, recordExecution, type EvalContext, type RuleSpec, type BacktestConfig } from '@coinruler/rules';
 import {
   getRotationStatus,
   rotateAPIKey,
@@ -405,6 +405,17 @@ app.post('/rules/:id/activate', async (req, res) => {
     const { id } = req.params;
     const { enabled } = req.body as { enabled: boolean };
     await setRuleEnabled(db, id, !!enabled);
+    
+    // Send alert on activation change
+    const rule = await db.collection('rules').findOne({ _id: new ObjectId(id) as any });
+    liveEvents.emit('alert', {
+      type: 'rule_status',
+      severity: 'info',
+      message: `Rule ${rule?.name || id} ${enabled ? 'activated' : 'deactivated'}`,
+      data: { ruleId: id, enabled },
+      timestamp: new Date().toISOString(),
+    });
+    
     res.json({ ok: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -417,6 +428,78 @@ app.get('/rules/:id/metrics', async (req, res) => {
     const { id } = req.params;
     const docs = await db.collection('ruleMetrics').find({ ruleVersionId: id }).sort({ windowEnd: -1 }).limit(50).toArray();
     res.json(docs);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Run optimizer manually or get last results
+app.post('/rules/optimize', async (req, res) => {
+  if (!db) return res.status(503).json({ error: 'Database not connected' });
+  try {
+    const config = req.body || {};
+    const results = await runOptimizationCycle(db, config);
+    
+    // Send alert for optimization results
+    if (results.length > 0) {
+      liveEvents.emit('alert', {
+        type: 'optimization',
+        severity: 'medium',
+        message: `Optimizer generated ${results.length} rule improvements`,
+        data: { candidateCount: results.length, topCandidates: results.slice(0, 3) },
+        timestamp: new Date().toISOString(),
+      });
+    }
+    
+    // Create approvals for top candidates
+    for (const result of results.slice(0, 3)) {
+      const approval: Approval = {
+        type: 'stake-suggestion',
+        coin: 'RULE_UPDATE',
+        amount: 0,
+        title: `Optimize: ${result.candidateRule.name}`,
+        summary: result.reasoning,
+        status: 'pending',
+        createdAt: new Date(),
+        metadata: { optimization: result },
+      };
+      await db.collection('approvals').insertOne(approval as any);
+      liveEvents.emit('approval:created', approval);
+    }
+    
+    res.json({ candidates: results.length, topResults: results.slice(0, 5) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Backtest a rule
+app.post('/rules/:id/backtest', async (req, res) => {
+  if (!db) return res.status(503).json({ error: 'Database not connected' });
+  try {
+    const { id } = req.params;
+    const rule = await db.collection('rules').findOne({ _id: new ObjectId(id) as any }) as any as RuleSpec;
+    if (!rule) return res.status(404).json({ error: 'Rule not found' });
+    
+    const config: BacktestConfig = {
+      startDate: new Date(req.body.startDate || Date.now() - 30 * 24 * 60 * 60 * 1000),
+      endDate: new Date(req.body.endDate || Date.now()),
+      initialBalance: req.body.initialBalance || { BTC: 1, USDC: 50000 },
+      initialPrices: req.body.initialPrices || { BTC: 69000, USDC: 1 },
+    };
+    
+    const result = await backtestRule(db, rule, config);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get risk state
+app.get('/risk/state', async (_req, res) => {
+  try {
+    const state = getRiskState();
+    res.json(state);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -642,11 +725,123 @@ async function startServer() {
           await db.collection('approvals').insertOne(approval as any);
           liveEvents.emit('approval:created', approval);
           lastRuleExecutions[intent.ruleId] = new Date();
+          
+            // Send alert for new approval
+            liveEvents.emit('alert', {
+              type: 'rule_action',
+              severity: 'medium',
+              message: `Rule ${intent.ruleId} generated trade proposal: ${approval.title}`,
+              data: approval,
+              timestamp: new Date().toISOString(),
+            });
         }
       } catch (err) {
         // Silent fail for rule evaluation (non-critical)
       }
     }, 60_000);
+    
+      // Performance monitoring scheduler (5 minute cadence)
+      console.log('📊 Starting performance monitor (5m interval)...');
+      setInterval(async () => {
+        if (!db) return;
+        try {
+          // Check rule performance for alerts
+          const rules = await db.collection('rules').find({ enabled: true }).toArray();
+          for (const rule of rules) {
+            const metrics = await db.collection('ruleMetrics')
+              .find({ ruleVersionId: rule._id.toString() })
+              .sort({ windowEnd: -1 })
+              .limit(10)
+              .toArray();
+          
+            if (metrics.length >= 5) {
+              const recent = metrics.slice(0, 5);
+              const avgSharpe = recent.reduce((sum: number, m: any) => sum + (m.sharpe || 0), 0) / recent.length;
+              const avgMaxDD = recent.reduce((sum: number, m: any) => sum + (m.maxDD || 0), 0) / recent.length;
+              const avgWinRate = recent.reduce((sum: number, m: any) => sum + (m.winRate || 0), 0) / recent.length;
+            
+              // Alert on poor performance
+              if (avgSharpe < 0.5 && avgWinRate < 40) {
+                liveEvents.emit('alert', {
+                  type: 'performance',
+                  severity: 'high',
+                  message: `Rule "${rule.name}" underperforming: Sharpe ${avgSharpe.toFixed(2)}, Win Rate ${avgWinRate.toFixed(1)}%`,
+                  data: { ruleId: rule._id.toString(), avgSharpe, avgMaxDD, avgWinRate },
+                  timestamp: new Date().toISOString(),
+                });
+              }
+            
+              // Alert on high drawdown
+              if (avgMaxDD > 20) {
+                liveEvents.emit('alert', {
+                  type: 'risk',
+                  severity: 'high',
+                  message: `Rule "${rule.name}" experiencing high drawdown: ${avgMaxDD.toFixed(1)}%`,
+                  data: { ruleId: rule._id.toString(), maxDrawdown: avgMaxDD },
+                  timestamp: new Date().toISOString(),
+                });
+              }
+            }
+          }
+        
+          // Check risk state for alerts
+          const riskState = getRiskState();
+          if (riskState.tradesLastHour >= 4) {
+            liveEvents.emit('alert', {
+              type: 'risk',
+              severity: 'medium',
+              message: `High trading velocity: ${riskState.tradesLastHour} trades in last hour (throttle at 5)`,
+              data: riskState,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        
+          if (riskState.dailyLossUSD < -1000) {
+            liveEvents.emit('alert', {
+              type: 'risk',
+              severity: 'high',
+              message: `Daily loss threshold approaching: $${riskState.dailyLossUSD.toFixed(2)}`,
+              data: riskState,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } catch (err) {
+          // Silent fail for monitoring
+        }
+      }, 5 * 60 * 1000);
+    
+      // Nightly optimizer (runs at 2 AM UTC)
+      console.log('🤖 Scheduling nightly optimizer...');
+      const scheduleNextOptimization = () => {
+        const now = new Date();
+        const next = new Date(now);
+        next.setUTCHours(2, 0, 0, 0);
+        if (next <= now) next.setDate(next.getDate() + 1);
+        const delay = next.getTime() - now.getTime();
+      
+        setTimeout(async () => {
+          console.log('🤖 Running nightly optimization cycle...');
+          if (db) {
+            try {
+              const results = await runOptimizationCycle(db, {});
+              console.log(`✅ Optimization complete: ${results.length} candidates generated`);
+              if (results.length > 0) {
+                liveEvents.emit('alert', {
+                  type: 'optimization',
+                  severity: 'info',
+                  message: `Nightly optimization: ${results.length} rule improvements available`,
+                  data: { candidates: results.slice(0, 3) },
+                  timestamp: new Date().toISOString(),
+                });
+              }
+            } catch (err: any) {
+              console.error('Optimization error:', err.message);
+            }
+          }
+          scheduleNextOptimization();
+        }, delay);
+      };
+      scheduleNextOptimization();
     
     console.log('✅ API fully initialized and ready for requests');
   });
