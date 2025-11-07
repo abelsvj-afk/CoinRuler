@@ -98,7 +98,8 @@ const mongoOptions = {
   tls: true,
   tlsAllowInvalidCertificates: true, // Temporary fix for Atlas TLS mismatch
   tlsAllowInvalidHostnames: false,
-  serverSelectionTimeoutMS: 10000,
+  serverSelectionTimeoutMS: 5000, // Reduced to 5s for faster startup
+  connectTimeoutMS: 5000,
   retryWrites: true,
   w: 'majority' as const,
   maxPoolSize: 10,
@@ -114,7 +115,8 @@ async function connectMongoDB() {
     return true;
   } catch (err: any) {
     console.error('❌ MongoDB connection error:', err.message);
-    console.warn('⚠️  API will start in degraded mode. Retrying connection in background...');
+    console.warn('⚠️  API will start in degraded mode without database access.');
+    console.warn('⚠️  Check: 1) MongoDB Atlas IP whitelist, 2) Credentials, 3) Cluster status');
     // Retry in background without blocking startup
     setTimeout(async () => {
       console.log('🔄 Retrying MongoDB connection...');
@@ -126,7 +128,7 @@ async function connectMongoDB() {
       } catch (retryErr: any) {
         console.error('❌ MongoDB retry failed:', retryErr.message);
       }
-    }, 10000);
+    }, 30000); // Retry after 30s
     return false;
   }
 }
@@ -861,12 +863,12 @@ const port = Number(process.env.API_PORT || process.env.PORT || 3001);
 async function startServer() {
   console.log('🚀 Starting CoinRuler API server...');
   
-  // Connect MongoDB first (non-blocking with timeout)
+  // Connect MongoDB first (non-blocking with reduced timeout)
   const connectPromise = connectMongoDB();
   const timeoutPromise = new Promise((resolve) => setTimeout(() => {
     console.warn('⏱️  MongoDB connection taking longer than expected, continuing startup...');
     resolve(false);
-  }, 8000));
+  }, 6000)); // Reduced from 8s to 6s
   
   await Promise.race([connectPromise, timeoutPromise]);
   
@@ -876,6 +878,11 @@ async function startServer() {
     console.log(`📡 Health: http://localhost:${port}/health`);
   console.log(`🧪 Full Health: http://localhost:${port}/health/full`);
     console.log(`🌐 CORS origin: ${WEB_ORIGIN}`);
+    
+    if (!db) {
+      console.warn('⚠️  MongoDB not connected - many features will be unavailable');
+      console.warn('⚠️  Troubleshooting: https://www.mongodb.com/docs/atlas/troubleshoot-connection/');
+    }
     
     // Start credential rotation scheduler if DB is ready
     if (db) {

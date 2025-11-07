@@ -35,7 +35,9 @@ export class CoinbaseApiClient {
 
   constructor(apiKey?: string, apiSecret?: string) {
     this.apiKey = apiKey || process.env.COINBASE_API_KEY || '';
-    this.apiSecret = apiSecret || process.env.COINBASE_API_SECRET || '';
+    // Handle escaped newlines in the private key
+    const rawSecret = apiSecret || process.env.COINBASE_API_SECRET || '';
+    this.apiSecret = rawSecret.replace(/\\n/g, '\n');
   }
 
   private sign(timestamp: string, method: string, path: string, body = ''): string {
