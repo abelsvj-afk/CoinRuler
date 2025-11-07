@@ -1157,9 +1157,9 @@ async function startServer() {
   await Promise.race([connectPromise, timeoutPromise]);
   
   // Start listening regardless of MongoDB status
-  const server = app.listen(port, async () => {
+  const server = app.listen(port, '0.0.0.0', async () => {
     const log = getLogger({ svc: 'api' });
-    log.info(`API listening on :${port}`);
+    log.info(`API listening on 0.0.0.0:${port} (LIGHT_MODE=${LIGHT_MODE})`);
     log.info(`Health: http://localhost:${port}/health`);
     log.info(`Full Health: http://localhost:${port}/health/full`);
   log.info(`CORS origins: ${ORIGINS.join(', ')}`);

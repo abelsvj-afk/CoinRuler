@@ -1,13 +1,33 @@
+let cachedBase: string | null = null;
 export function getApiBase() {
-  // Prefer server-side env var; fallback to public or local dev
-  if (typeof window !== 'undefined') {
-    const override = localStorage.getItem('override_api_base');
-    if (override && override.startsWith('http')) {
-      return override.replace(/\/$/, '');
+  if (cachedBase) return cachedBase;
+  // Runtime detection order:
+  // 1. Explicit override in localStorage (interactive recovery)
+  // 2. NEXT_PUBLIC_API_BASE injected at build/deploy
+  // 3. Vercel system env for same-project API (if using rewrites)
+  // 4. Fallback guess: production Railway URL heuristic (coinruler-production) or localhost
+  try {
+    if (typeof window !== 'undefined') {
+      const override = localStorage.getItem('override_api_base');
+      if (override && /^https?:\/\//i.test(override)) {
+        cachedBase = override.replace(/\/$/, '');
+        return cachedBase;
+      }
     }
+  } catch {}
+  const envBase = process.env.NEXT_PUBLIC_API_BASE || process.env.API_BASE || process.env.API_BASE_URL;
+  if (envBase) {
+    cachedBase = envBase.replace(/\/$/, '');
+    return cachedBase;
   }
-  const base = process.env.API_BASE || process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:3001';
-  return base.replace(/\/$/, '');
+  // If running on mycoinruler.xyz and no env provided, derive probable API
+  if (typeof window !== 'undefined' && window.location.hostname.endsWith('mycoinruler.xyz')) {
+    // Prefer explicit subdomain api. if future custom domain
+    cachedBase = 'https://coinruler-production.up.railway.app';
+    return cachedBase;
+  }
+  cachedBase = 'http://localhost:3001';
+  return cachedBase;
 }
 
 export async function apiGet(path: string, init?: RequestInit) {
