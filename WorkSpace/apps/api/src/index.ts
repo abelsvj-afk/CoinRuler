@@ -108,6 +108,14 @@ app.options('*', cors());
 app.use(express.json());
 app.use(morgan('dev'));
 app.use(rateLimit({ windowMs: 60_000, max: 60 }));
+// Extra request logger for deploy debugging (first 100 chars of path & UA)
+app.use((req, _res, next) => {
+  try {
+    const ua = (req.headers['user-agent'] || '').toString().slice(0, 80);
+    console.log(`[req] ${req.method} ${req.url} ua=${ua}`);
+  } catch {}
+  next();
+});
 
 // Lightweight mode flag to disable background schedulers & heavy tasks (for debugging deploy 502s)
 const LIGHT_MODE = process.env.LIGHT_MODE === 'true';
