@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { TrendingUp, AlertTriangle, DollarSign, Activity, Shield, Zap } from "lucide-react";
 import { Card, StatCard } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { getApiBase } from "./lib/api";
+import { getApiBase, apiPost } from "./lib/api";
 import { useRouter } from "next/navigation";
 import { SSEStatus } from "./components/SSEStatus";
 
@@ -202,8 +202,8 @@ export default function HomePage() {
     if (snapshotBusy) return;
     setSnapshotBusy(true);
     try {
-      const res = await fetch(`${apiBase}/portfolio/snapshot/force`, { method: 'POST' });
-      if (res.ok) {
+      const json = await apiPost('/portfolio/snapshot/force');
+      if (json?.ok) {
         // Re-fetch after snapshot
         const [healthRes, dashRes, portRes] = await Promise.all([
           fetch(`${apiBase}/health`).then(r=>r.json()),

@@ -552,7 +552,9 @@ app.post('/portfolio/snapshot/force', async (req, res) => {
       await db.collection('baselines').insertOne({ key: 'owner', value: baselines, createdAt: new Date() });
     }
     
-    liveEvents.emit('portfolio:snapshot', { snapshot, reason: 'force-refresh' });
+  liveEvents.emit('portfolio:snapshot', { snapshot, reason: 'force-refresh' });
+  // Also emit portfolio:updated for clients listening only to updated events
+  liveEvents.emit('portfolio:updated', { snapshot, reason: 'force-refresh' });
     // Persist alert for audit
     try {
       await db.collection('alerts').insertOne({
@@ -1408,8 +1410,10 @@ app.get('/live', (req, res) => {
     'approval:updated': (data: any) => res.write(`data: ${JSON.stringify({ type: 'approval:updated', data })}\n\n`),
     'killswitch:changed': (data: any) => res.write(`data: ${JSON.stringify({ type: 'killswitch:changed', data })}\n\n`),
     'portfolio:updated': (data: any) => res.write(`data: ${JSON.stringify({ type: 'portfolio:updated', data })}\n\n`),
+    // Map legacy/new snapshot events to portfolio:updated for UI compatibility
+    'portfolio:snapshot': (data: any) => res.write(`data: ${JSON.stringify({ type: 'portfolio:updated', data })}\n\n`),
     'alert': (data: any) => res.write(`data: ${JSON.stringify({ type: 'alert', data })}\n\n`),
-  };
+  } as Record<string, (d: any) => void>;
 
   Object.entries(handlers).forEach(([event, handler]) => liveEvents.on(event, handler));
 

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, useCallback } from 'react';
-import { getApiBase } from '../lib/api';
+import { getApiBase, apiPost } from '../lib/api';
 import { useSSE, type SSEEvent } from '../lib/useSSE';
 import { showToast } from '../components/Toast';
 
@@ -131,10 +131,8 @@ export default function PortfolioPage() {
             onClick={async () => {
               setSnapshotBusy(true);
               try {
-                const res = await fetch(`${api}/portfolio/snapshot/force`, { method: 'POST' });
-                if (res.ok) {
-                  await loadPortfolio();
-                }
+                const json = await apiPost('/portfolio/snapshot/force');
+                if (json?.ok) await loadPortfolio();
               } finally {
                 setSnapshotBusy(false);
               }
