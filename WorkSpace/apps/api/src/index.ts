@@ -84,20 +84,78 @@ app.use(helmet({
 }));
 // CORS to allow the web app to call the API from a different port
 // Support multiple origins via comma-separated WEB_ORIGIN values
+// Accept forms like:
+//  - http://localhost:3000
+//  - https://app.example.com
+//  - *.example.com
+//  - https://*.vercel.app (scheme-prefixed wildcard)
 const ORIGIN_RAW = process.env.WEB_ORIGIN || process.env.NEXT_PUBLIC_WEB_ORIGIN || 'http://localhost:3000';
 const ORIGINS = ORIGIN_RAW.split(',').map(o => o.trim()).filter(Boolean);
+
+type AllowedOrigin = {
+  raw: string;
+  scheme?: 'http:' | 'https:';
+  host?: string; // without scheme
+  wildcardBase?: string; // e.g. vercel.app for *.vercel.app
+};
+
+function parseAllowed(originStr: string): AllowedOrigin {
+  // Normalize: pull out scheme if present
+  try {
+    // If no scheme provided, URL() will throw; handle below
+    const u = new URL(originStr);
+    const host = u.host; // includes hostname[:port]
+    if (host.startsWith('*.') || host.startsWith('%2A.')) {
+      return { raw: originStr, scheme: u.protocol as any, wildcardBase: host.replace(/^\*\*?\.?/, '').replace(/^%2A\.?/, '') };
+    }
+    return { raw: originStr, scheme: u.protocol as any, host };
+  } catch {
+    // No scheme: could be exact host or wildcard like *.domain.com
+    const str = originStr.replace(/^https?:\/\//, '');
+    if (str.startsWith('*.') || str.startsWith('%2A.')) {
+      return { raw: originStr, wildcardBase: str.replace(/^\*\*?\.?/, '').replace(/^%2A\.?/, '') };
+    }
+    return { raw: originStr, host: str };
+  }
+}
+
+const ALLOWED: AllowedOrigin[] = ORIGINS.map(parseAllowed);
+
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin like curl or same-origin
     if (!origin) return callback(null, true);
-    const allowed = ORIGINS.some(allowedOrigin => {
-      if (allowedOrigin.startsWith('*.')) {
-        // wildcard subdomain support: *.example.com
-        const base = allowedOrigin.slice(2);
-        return origin === `https://${base}` || origin === `http://${base}` || origin.endsWith(`.${base}`);
+
+    let u: URL | null = null;
+    try { u = new URL(origin); } catch { /* ignore */ }
+    const originHost = u?.host || origin.replace(/^https?:\/\//, '');
+    const originScheme = (u?.protocol as 'http:' | 'https:' | undefined);
+
+    const allowed = ALLOWED.some(a => {
+      // Exact string match first (covers fully-qualified entries)
+      if (origin === a.raw) return true;
+
+      // Wildcard host match
+      if (a.wildcardBase) {
+        const base = a.wildcardBase.toLowerCase();
+        const host = originHost.toLowerCase();
+        const schemeOk = !a.scheme || a.scheme === originScheme;
+        if (!schemeOk) return false;
+        // Allow apex and any subdomain
+        return host === base || host.endsWith(`.${base}`);
       }
-      return origin === allowedOrigin;
+
+      // Non-wildcard host comparison (with or without scheme in config)
+      if (a.host) {
+        const host = originHost.toLowerCase();
+        const allowedHost = a.host.toLowerCase();
+        const schemeOk = !a.scheme || a.scheme === originScheme;
+        return schemeOk && host === allowedHost;
+      }
+
+      return false;
     });
+
     if (allowed) return callback(null, true);
     return callback(new Error(`CORS blocked for origin: ${origin}`));
   },

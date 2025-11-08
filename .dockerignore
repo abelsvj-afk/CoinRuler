@@ -1,0 +1,27 @@
+# Prevent sensitive and unnecessary files from being sent to Docker build context
+
+# Node
+node_modules
+npm-debug.log*
+yarn-error.log*
+
+# Builds / caches
+**/dist
+.next
+.turbo
+coverage
+
+# Env files (secrets)
+.env
+.env.*
+**/.env
+**/.env.*
+
+# VCS
+.git
+.gitignore
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+.vscode
