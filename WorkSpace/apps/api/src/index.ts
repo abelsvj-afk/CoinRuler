@@ -5,7 +5,7 @@ import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { MongoClient, Db, ObjectId } from 'mongodb';
-import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation, getCoinbaseApiClient, validateEnv, isDryRun, getEnv, getLogger, hasCoinbaseCredentials, executeTrade, type TradeSide, type TradeResult } from '@coinruler/shared';
+import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation, getCoinbaseClient as getCoinbaseApiClient, validateEnv, isDryRun, getEnv, getLogger, hasCoinbaseCredentials, executeTrade, type TradeSide, type TradeResult } from '@coinruler/shared';
 // Lazy import of rules package (monorepo build order safety)
 import { parseRule, createRule as createRuleDoc, listRules as listRuleDocs, setRuleEnabled, evaluateRulesTick, runOptimizationCycle, backtestRule, getRiskState, recordExecution, type EvalContext, type RuleSpec, type BacktestConfig } from '@coinruler/rules';
 import {
@@ -21,6 +21,12 @@ import {
 } from '@coinruler/security';
 import { getLLMAdvice, streamLLMAdvice, type ChatMessage } from '@coinruler/llm';
 import { EventEmitter } from 'events';
+import { DataScheduler } from './scheduler';
+import { initializeCollections, enforceXRPMinBaseline } from './collections';
+import { checkBTCSellAllowed, monitorLTV, type CollateralStatus } from './collateralProtection';
+import { requiresMFA, requestMFA, verifyMFA, cleanupExpiredMFA, getPendingMFA } from './mfa';
+import { generateDailyLearning, scheduleDailyLearning } from './learningSystem';
+import { scanProfitOpportunities, createProfitTakingApproval } from './profitTaking';
 
 // Coinbase WebSocket for live prices (browser environment compatibility)
 let coinbaseWsClient: any = null;
@@ -251,6 +257,11 @@ async function connectMongoDB() {
     const client = await MongoClient.connect(MONGODB_URI, mongoOptions);
     db = client.db(DATABASE_NAME);
     getLogger({ svc: 'api' }).info('MongoDB connected successfully');
+    
+    // Initialize collections and seed data (Requirement 2)
+    await initializeCollections(db);
+    await enforceXRPMinBaseline(db);
+    
     liveEvents.emit('system:health', { component: 'mongodb', status: 'connected' });
     return true;
   } catch (err: any) {
@@ -356,10 +367,10 @@ app.get('/coinbase/status', async (_req, res) => {
     if (!ok) {
       switch (kind.type) {
         case 'cdp-pem':
-          details.advice = 'Your secret looks like a PEM private key (CDP/Onchain). Advanced Trade requires an HMAC secret (single-line random string). Create an Advanced Trade API key in your Coinbase profile and set COINBASE_API_KEY/COINBASE_API_SECRET.';
+          details.advice = 'CDP PEM key detected. If you see 401, verify CDP key scopes include wallet:accounts:read (and related reads) and that the key targets Advanced Trade in the CDP portal. See docs/CDP_KEY_GENERATION.md.';
           break;
         case 'cdp-base64':
-          details.advice = 'Your secret looks like a base64 CDP key. Advanced Trade requires an HMAC secret. Create an Advanced Trade key (not CDP) and set COINBASE_API_KEY/COINBASE_API_SECRET.';
+          details.advice = 'CDP key format detected. Ensure you generated keys in the CDP portal and that scopes include wallet:accounts:read. For brokerage endpoints, CDP JWT auth is required; see docs/CDP_KEY_GENERATION.md.';
           break;
         case 'hmac':
           details.advice = 'Authentication failed. Ensure this HMAC key has read (and later trade) permissions for Advanced Trade. Try regenerating the key and updating env vars.';
@@ -367,6 +378,30 @@ app.get('/coinbase/status', async (_req, res) => {
         default:
           details.advice = 'Authentication failed. Likely wrong key type. Use Advanced Trade API keys (HMAC), not CDP/PEM.';
       }
+      // If CDP client is present, expose CDP status so UI can show a useful fallback
+      try {
+        // @ts-ignore access helper
+        if ((client as any).hasCdpSupport?.()) {
+          details.cdp = { enabled: true };
+          try {
+            // @ts-ignore list wallets
+            const wallets = await (client as any).listCdpWallets?.();
+            details.cdp.wallets = { count: Array.isArray(wallets) ? wallets.length : 0 };
+            if (Array.isArray(wallets) && wallets.length > 0) {
+              const first = wallets[0];
+              details.cdp.sample = {
+                id: first?.id || first?.uuid || null,
+                assets: (first?.assets || []).slice(0, 3).
+                  map((a: any) => ({ symbol: a?.asset?.symbol || a?.symbol, qty: a?.quantity || a?.amount }))
+              };
+            }
+          } catch (e: any) {
+            details.cdp.error = e?.message || String(e);
+          }
+        } else {
+          details.cdp = { enabled: false };
+        }
+      } catch {}
     }
     // Try a lightweight balances fetch (sample only)
     try {
@@ -687,6 +722,7 @@ app.patch('/approvals/:id', ownerAuth, async (req, res) => {
 
 // Manual execution endpoint (owner only): place order for an approved intent.
 app.post('/approvals/:id/execute', ownerAuth, async (req, res) => {
+  const { mfaCode } = req.body; // MFA code for large trades
   if (!db) return res.status(503).json({ error: 'Database not connected' });
   try {
     const { id } = req.params;
@@ -713,6 +749,63 @@ app.post('/approvals/:id/execute', ownerAuth, async (req, res) => {
       ? Number((baseBalance * allocationPct).toFixed(6)) || 0.001
       : Math.min(Number((baseBalance * allocationPct).toFixed(6)), baseBalance);
     if (amount <= 0) return res.status(400).json({ error: 'Calculated amount <= 0; insufficient balance or allocation' });
+    
+    // Get current price for value estimation
+    const prices = hasCoinbaseCredentials() 
+      ? await getCoinbaseApiClient().getSpotPrices([symbol])
+      : {};
+    const estimatedValueUSD = amount * (prices[symbol] || 0);
+    
+    // BTC COLLATERAL PROTECTION (CRITICAL)
+    if (side === 'sell' && symbol === 'BTC') {
+      const btcCheck = await checkBTCSellAllowed(db, amount);
+      if (!btcCheck.allowed) {
+        liveEvents.emit('alert', {
+          type: 'collateral_blocked',
+          severity: 'critical',
+          message: `🚫 BTC SELL BLOCKED: ${btcCheck.reason}`,
+          data: { symbol, amount, status: btcCheck.status },
+          timestamp: new Date().toISOString(),
+        });
+        return res.status(403).json({ 
+          error: btcCheck.reason,
+          collateralStatus: btcCheck.status,
+          blocked: true
+        });
+      }
+    }
+    
+    // MFA VERIFICATION (for large trades)
+    if (requiresMFA(estimatedValueUSD)) {
+      if (!mfaCode) {
+        // Generate MFA code
+        const mfaData = await requestMFA(db, {
+          tradeId: id,
+          userId: 'owner',
+          type: side,
+          asset: symbol,
+          quantity: amount,
+          estimatedValueUSD,
+        });
+        return res.status(403).json({
+          error: 'MFA required for large trade',
+          mfaRequired: true,
+          estimatedValueUSD,
+          expiresAt: mfaData.expiresAt,
+          message: `Check terminal for verification code (expires in 5 minutes)`,
+        });
+      } else {
+        // Verify MFA code
+        const verification = await verifyMFA(db, id, mfaCode);
+        if (!verification.valid) {
+          return res.status(403).json({
+            error: verification.reason,
+            mfaFailed: true,
+          });
+        }
+      }
+    }
+    
     const risk = getRiskState();
     const tradeRes = await executeTrade({
       side,
@@ -1251,6 +1344,226 @@ app.get('/report/daily', async (_req, res) => {
   }
 });
 
+// Profit-taking opportunities scanner (Requirement 15)
+app.get('/analysis/profit-taking', async (_req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const { scanProfitOpportunities } = await import('./profitTaking');
+    const opportunities = await scanProfitOpportunities(db);
+    res.json({ count: opportunities.length, opportunities });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Run profit-taking scanner and create approvals
+app.post('/analysis/profit-taking/scan', ownerAuth, async (_req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const { runProfitTakingScan } = await import('./profitTaking');
+    const created = await runProfitTakingScan(db);
+    liveEvents.emit('alert', {
+      type: 'profit_taking',
+      severity: 'info',
+      message: `Profit-taking scan complete: ${created} approvals created`,
+      timestamp: new Date().toISOString(),
+    });
+    res.json({ ok: true, approvalsCreated: created });
+
+// ML Price Predictions (Requirement 12)
+app.get('/analysis/predictions', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const symbol = (req.query.symbol as string) || 'BTC';
+    
+    // Get latest price data from snapshots
+    const latest = await db.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
+    const prices = (latest as any)?._prices || {};
+    const currentPrice = prices[symbol];
+    
+    if (!currentPrice) {
+      return res.status(404).json({ error: `No price data for ${symbol}` });
+    }
+    
+    // Get historical prices (last 30 snapshots for EMA calculation)
+    const historicalSnaps = await db.collection('snapshots')
+      .find({})
+      .sort({ timestamp: -1 })
+      .limit(30)
+      .toArray();
+    
+    const historicalPrices = historicalSnaps
+      .map((s: any) => s._prices?.[symbol])
+      .filter((p: any) => typeof p === 'number')
+      .reverse();
+    
+    // TODO: Generate predictions using ML models (LSTM/ARIMA)
+    // For now, return simple moving average projection
+    const recentAvg = historicalPrices.length > 0
+      ? historicalPrices.slice(-5).reduce((a: number, b: number) => a + b, 0) / Math.min(5, historicalPrices.length)
+      : currentPrice;
+    const predictions = {
+      '1h': recentAvg * 1.001,
+      '4h': recentAvg * 1.002,
+      '1d': recentAvg * 1.005,
+      '3d': recentAvg * 1.01,
+      '1w': recentAvg * 1.02,
+      confidence: 0.5,
+      method: 'simple_moving_average',
+      note: 'Full LSTM/ARIMA models pending implementation',
+    };
+    
+    res.json({
+      symbol,
+      currentPrice,
+      predictions,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Daily Learning Summary (Requirement 4)
+app.get('/reports/daily-learning', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    
+  const learning = await generateDailyLearning(db);
+    
+    res.json(learning);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// MFA Endpoints (Requirement 16)
+app.post('/mfa/request', ownerAuth, async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const { tradeId, type, asset, quantity, estimatedValueUSD } = req.body;
+    
+    const mfaData = await requestMFA(db, {
+      tradeId,
+      userId: 'owner',
+      type,
+      asset,
+      quantity,
+      estimatedValueUSD,
+    });
+    
+    res.json({
+      ok: true,
+      expiresAt: mfaData.expiresAt,
+      message: 'Check terminal for verification code',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/mfa/verify', ownerAuth, async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const { tradeId, code } = req.body;
+    
+    const verification = await verifyMFA(db, tradeId, code);
+    
+    if (verification.valid) {
+      res.json({ ok: true, message: 'MFA verified' });
+    } else {
+      res.status(403).json({ error: verification.reason });
+    }
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/mfa/pending', ownerAuth, async (_req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const pending = await getPendingMFA(db, 'owner');
+    res.json({ count: pending.length, items: pending });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Chat Log (for AI widget)
+app.post('/chat/log', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const { message } = req.body;
+    
+    await db.collection('chatLogs').insertOne({
+      ...message,
+      timestamp: new Date(message.timestamp),
+      createdAt: new Date(),
+    });
+    
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/chat/history', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const limit = Math.min(100, Math.max(1, Number((req.query.limit as string) || '50')));
+    
+    const messages = await db.collection('chatLogs')
+      .find({})
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .toArray();
+    
+    res.json({ count: messages.length, messages: messages.reverse() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Collateral Status (BTC protection)
+app.get('/collateral/status', async (_req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    
+    const collateralDocs = await db.collection('collateral').find({}).toArray();
+    const btcCollateral = collateralDocs.filter((c: any) => 
+      (c.currency || '').toUpperCase() === 'BTC'
+    );
+    
+    const btcLocked = btcCollateral.reduce((sum: number, c: any) => 
+      sum + (c.locked || 0), 0
+    );
+    
+    const latest = await db.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
+    const btcTotal = (latest as any)?.BTC || 0;
+    const btcFree = Math.max(0, btcTotal - btcLocked);
+    
+    const ltvs = collateralDocs
+      .map((c: any) => c.ltv)
+      .filter((ltv: any) => typeof ltv === 'number');
+    const maxLTV = ltvs.length ? Math.max(...ltvs) : null;
+    
+    res.json({
+      btcTotal,
+      btcLocked,
+      btcFree,
+      maxLTV,
+      collateralPositions: collateralDocs.length,
+      warning: maxLTV && maxLTV > 0.6 ? 'High LTV detected' : null,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Recent backtests (inspection)
 app.get('/backtests/recent', async (req, res) => {
   try {
@@ -1516,7 +1829,8 @@ app.get('/rotation/policy/:service', async (req, res) => {
   }
 });
 
-app.put('/rotation/policy/:service', ownerAuth, async (req, res) => {
+// Update rotation policy
+app.post('/rotation/policy/:service', ownerAuth, async (req, res) => {
   try {
     const { service } = req.params;
     const policy = { service: service as CredentialService, ...req.body };
@@ -1883,6 +2197,67 @@ async function startServer() {
       }
     } else {
       getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: rotation scheduler disabled');
+    }
+
+    // Data ingestion scheduler (Requirement 1 & 5)
+    let dataScheduler: DataScheduler | null = null;
+    if (!LIGHT_MODE && db) {
+      try {
+        dataScheduler = new DataScheduler(db, liveEvents, {
+          portfolioIntervalMs: 5 * 60 * 1000, // 5 minutes
+          priceIntervalMs: 60 * 1000, // 60 seconds
+          rulesIntervalMs: 10 * 60 * 1000, // 10 minutes
+        });
+        dataScheduler.start();
+        getLogger({ svc: 'api' }).info('Data scheduler started (portfolio: 5min, prices: 60s, rules: 10min)');
+        
+        // Start daily learning scheduler
+  scheduleDailyLearning(db, liveEvents);
+        getLogger({ svc: 'api' }).info('Daily learning scheduler started (runs at midnight)');
+        
+        // MFA cleanup (every 10 minutes)
+        setInterval(() => {
+          if (db) cleanupExpiredMFA(db).catch(() => {});
+        }, 10 * 60 * 1000);
+        
+        // LTV monitoring (every 5 minutes)
+        setInterval(() => {
+          if (db) monitorLTV(db, liveEvents).catch((err) => {
+            liveEvents.emit('alert', {
+              type: 'ltv_monitor',
+              severity: 'info',
+              message: `LTV monitor: ${err.message}`,
+              timestamp: new Date().toISOString(),
+            });
+          });
+        }, 5 * 60 * 1000);
+        
+        // Automatic profit-taking (every hour if enabled)
+        const AUTO_PROFIT_ENABLED = process.env.AUTO_EXECUTE_PROFIT_TAKING === 'true';
+        if (AUTO_PROFIT_ENABLED) {
+          setInterval(async () => {
+              if (!db) return;
+            try {
+              const { executeAutomaticProfitTaking } = await import('./profitTaking');
+              const executed = await executeAutomaticProfitTaking(db);
+              if (executed > 0) {
+                liveEvents.emit('alert', {
+                  type: 'profit_taking_auto',
+                  severity: 'info',
+                  message: `🎯 Automatic profit-taking: ${executed} trades executed`,
+                  timestamp: new Date().toISOString(),
+                });
+              }
+            } catch (err: any) {
+              getLogger({ svc: 'api' }).error({ err: err?.message }, 'Auto profit-taking failed');
+            }
+          }, 60 * 60 * 1000); // Every hour
+          getLogger({ svc: 'api' }).info('Automatic profit-taking enabled (hourly checks)');
+        }
+        
+      } catch (err: any) {
+        getLogger({ svc: 'api' }).warn({ err: err?.message }, 'Data scheduler failed to start');
+      }
     }
 
     // Rules evaluator scheduler (disabled in LIGHT_MODE)

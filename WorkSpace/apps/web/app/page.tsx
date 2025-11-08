@@ -9,6 +9,7 @@ import { getApiBase, apiPost } from "./lib/api";
 import { useRouter } from "next/navigation";
 import { SSEStatus } from "./components/SSEStatus";
 import { useSSE, type SSEEvent } from "./lib/useSSE";
+import { AIChatWidget } from "./components/AIChatWidget";
 
 type DashboardResponse = {
   portfolio: any;
@@ -173,7 +174,8 @@ export default function HomePage() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 5000);
+    // Reduced from 5s to 30s - SSE handles real-time updates (Requirement 17)
+    const interval = setInterval(fetchData, 30000);
     return () => {
       isMounted = false;
       clearInterval(interval);
@@ -582,6 +584,9 @@ export default function HomePage() {
             </motion.div>
           ))}
         </AnimatePresence>
+      
+  {/* AI Chat Widget (Requirement 13) */}
+  <AIChatWidget />
       </div>
     </div>
   );

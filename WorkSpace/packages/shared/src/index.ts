@@ -6,6 +6,8 @@ export * from './monteCarlo';
 export * from './priceFeed';
 export * from './selfHealing';
 export * from './coinbaseApi';
+export { CoinbaseJwtClient } from './coinbaseJwtClient';
+export { getCoinbaseClient } from './coinbaseApi';
 export * from './mlLearning';
 export * from './marketIntelligence';
 export * from './env';

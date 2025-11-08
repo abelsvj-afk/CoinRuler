@@ -105,6 +105,27 @@ export class CoinbaseApiClient {
     return crypto.createHmac('sha256', this.apiSecret).update(message).digest('base64');
   }
 
+  /**
+   * Whether CDP (Coinbase Cloud) client initialized. Indicates user supplied a CDP key pair
+   * rather than (or in addition to) an Advanced Trade HMAC key.
+   */
+  public hasCdpSupport(): boolean {
+    return !!this.cdp;
+  }
+
+  /**
+   * List CDP wallets directly (if available). Throws if CDP not initialized.
+   */
+  public async listCdpWallets(): Promise<any[]> {
+    if (!this.cdp) throw new Error('CDP SDK not initialized');
+    try {
+      const wallets = await this.cdp.listWallets?.();
+      return Array.isArray(wallets) ? wallets : [];
+    } catch (e: any) {
+      throw new Error(e?.message || 'Failed to list CDP wallets');
+    }
+  }
+
   private async request(method: string, path: string, body?: any): Promise<any> {
     if (!this.apiKey || !this.apiSecret) {
       throw new Error('Coinbase API credentials not configured');
@@ -400,9 +421,33 @@ export class CoinbaseApiClient {
 // Singleton instance
 let coinbaseApiClient: CoinbaseApiClient | null = null;
 
+/**
+ * Factory function that returns the appropriate Coinbase client based on credentials.
+ * Detects CDP keys (organizations/...) and uses JWT auth, otherwise falls back to HMAC.
+ * For most use cases, prefer getCoinbaseClient() which returns the unified interface.
+ */
 export function getCoinbaseApiClient(): CoinbaseApiClient {
   if (!coinbaseApiClient) {
     coinbaseApiClient = new CoinbaseApiClient();
   }
   return coinbaseApiClient;
+}
+
+/**
+ * Get unified Coinbase client (automatically selects JWT or HMAC based on key format)
+ */
+export function getCoinbaseClient(): any {
+  const apiKey = process.env.COINBASE_API_KEY || '';
+  
+  // CDP keys start with "organizations/"
+  const isCdpKey = apiKey.startsWith('organizations/');
+  
+  if (isCdpKey) {
+    // Use JWT-based client for CDP keys
+    const { CoinbaseJwtClient } = require('./coinbaseJwtClient');
+    return new CoinbaseJwtClient();
+  } else {
+    // Use HMAC-based client for legacy keys
+    return getCoinbaseApiClient();
+  }
 }

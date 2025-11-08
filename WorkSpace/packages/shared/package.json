@@ -8,12 +8,14 @@
     "build": "tsc -p tsconfig.json"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.10",
     "typescript": "^5.4.5"
   },
   "dependencies": {
     "@coinbase/cdp-sdk": "^1.38.5",
     "@coinbase/coinbase-sdk": "^0.25.0",
     "@types/ws": "^8.18.1",
+    "jsonwebtoken": "^9.0.2",
     "ws": "^8.18.3",
     "zod": "^3.23.8"
   }
