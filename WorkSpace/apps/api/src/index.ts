@@ -250,6 +250,8 @@ app.get('/env', (_req, res) => {
     hasCoinbaseKey: !!process.env.COINBASE_API_KEY,
     hasCoinbaseSecret: !!process.env.COINBASE_API_SECRET,
     coinbaseKeyLength: process.env.COINBASE_API_KEY?.length || 0,
+    autoExecuteEnabled: process.env.AUTO_EXECUTE_ENABLED === 'true',
+    snapshotIntervalMinutes: Number(process.env.SNAPSHOT_INTERVAL_MINUTES || '60'),
   });
 });
 
@@ -1335,6 +1337,7 @@ async function startServer() {
           collateral,
         };
         const intents = await evaluateRulesTick(db, ctx);
+        const createdApprovalIds: Array<{ _id: any; intent: any }> = [];
         for (const intent of intents) {
           // For safety: always create an approval (dry-run by default)
           const approval: Approval = {
@@ -1347,7 +1350,8 @@ async function startServer() {
             createdAt: new Date(),
             metadata: { intent, dryRun: intent.dryRun },
           };
-          await db.collection('approvals').insertOne(approval as any);
+          const ins = await db.collection('approvals').insertOne(approval as any);
+          createdApprovalIds.push({ _id: ins.insertedId, intent });
           liveEvents.emit('approval:created', approval);
           lastRuleExecutions[intent.ruleId] = new Date();
           
@@ -1359,6 +1363,53 @@ async function startServer() {
               data: approval,
               timestamp: new Date().toISOString(),
             });
+        }
+
+        // Optional autonomous execution: approve and record a limited number of intents automatically
+        const autoEnabled = process.env.AUTO_EXECUTE_ENABLED === 'true';
+        const maxPerTick = Number(process.env.AUTO_EXECUTE_MAX_PER_TICK || '1');
+        const riskMaxTradesHr = Number(process.env.AUTO_EXECUTE_RISK_MAX_TRADES_HOUR || '4');
+        const dailyLossLimit = Number(process.env.AUTO_EXECUTE_DAILY_LOSS_LIMIT || '-1000');
+        if (autoEnabled && !isDryRun()) {
+          try {
+            const risk = getRiskState();
+            // Basic risk gating: skip auto-execution if system looks hot or losses exceed limit
+            if (risk.tradesLastHour >= riskMaxTradesHr || (typeof risk.dailyLoss === 'number' && risk.dailyLoss <= dailyLossLimit)) {
+              getLogger({ svc: 'api' }).warn('Auto-exec gated by risk: skipping this tick');
+            } else {
+              // Choose first N intents that look like concrete actions (enter/exit)
+              const candidates = createdApprovalIds
+                .filter(x => ['enter','exit'].includes((x.intent?.action?.type || '').toString()))
+                .slice(0, Math.max(0, maxPerTick));
+              for (const cand of candidates) {
+                // Mark approval as approved by system
+                await db.collection('approvals').updateOne(
+                  { _id: cand._id },
+                  { $set: { status: 'approved', actedBy: 'system:auto', actedAt: new Date() } }
+                );
+                // Record execution (simulated, platform trade execution is out of scope here)
+                const execDoc = {
+                  ruleId: cand.intent.ruleId,
+                  action: cand.intent.action,
+                  approvedId: cand._id,
+                  executedAt: new Date(),
+                  mode: 'auto',
+                  dryRun: false,
+                  notes: 'Auto-executed by scheduler',
+                };
+                await db.collection('executions').insertOne(execDoc as any);
+                liveEvents.emit('alert', {
+                  type: 'execution',
+                  severity: 'info',
+                  message: `Auto-executed ${cand.intent.action.type} for ${(cand.intent.action as any).symbol || 'MULTI'}`,
+                  data: execDoc,
+                  timestamp: new Date().toISOString(),
+                });
+              }
+            }
+          } catch (e: any) {
+            getLogger({ svc: 'api' }).warn({ err: e?.message }, 'Auto-execution step failed');
+          }
         }
       } catch (err) {
         // Silent fail for rule evaluation (non-critical)
