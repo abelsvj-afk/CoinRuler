@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Ultimate Crypto Advisor Bot",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=20.18.0"
+  },
   "scripts": {
     "start": "cd WorkSpace/apps/bot && npm install && node -r dotenv/config dist/index.js",
     "build": "cd WorkSpace && npm install && npm run build",
