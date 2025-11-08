@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ToastContainer } from './components/Toast';
 import { SSEClient } from './components/SSEClient';
@@ -7,16 +6,9 @@ import { SessionProvider } from "next-auth/react";
 import { auth } from "@/auth";
 import { LogoutButton } from "./components/LogoutButton";
 import { WelcomeModal } from "./components/WelcomeModal";
+// OnchainKit wallet connect (client component)
+import WalletConnect from './components/WalletConnect';
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "CoinRuler - Crypto Trading Dashboard",
@@ -38,7 +30,7 @@ export default async function RootLayout({
   
   return (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}> 
+  <body className={`antialiased`}> 
         <SessionProvider session={session}>
           <ToastContainer />
           {session && (
@@ -52,7 +44,8 @@ export default async function RootLayout({
                 <a href="/rotation" className="text-white/80 hover:text-white">Rotation</a>
                 <a href="/commands" className="text-white/80 hover:text-white">Commands</a>
                 <a href="/chat" className="text-white/80 hover:text-white">Chat</a>
-                <div className="ml-auto">
+                <div className="ml-auto flex items-center gap-3">
+                  <WalletConnect />
                   <LogoutButton />
                 </div>
               </nav>
