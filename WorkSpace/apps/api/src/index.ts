@@ -126,6 +126,18 @@ function parseAllowed(originStr: string): AllowedOrigin {
 }
 
 const ALLOWED: AllowedOrigin[] = ORIGINS.map(parseAllowed);
+// Fallback domains always permitted (suffix match) to avoid deploy lockouts when WEB_ORIGIN is misconfigured
+const CORS_FALLBACK_ALLOW = (process.env.CORS_FALLBACK_ALLOW || 'mycoinruler.xyz').split(',').map(s => s.trim()).filter(Boolean);
+
+// Diagnostics: log resolved CORS origins at startup (helps verify deployment picked up changes)
+try {
+  const logger = getLogger({ svc: 'api' });
+  logger.info(`Startup CORS ORIGINS resolved: ${ORIGINS.join(', ')}`);
+  const hasCustom = ORIGINS.some(o => o.includes('mycoinruler.xyz'));
+  if (!hasCustom) {
+    logger.warn('Custom domain https://mycoinruler.xyz NOT present in ORIGINS; check WEB_ORIGIN env override');
+  }
+} catch {}
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -137,7 +149,7 @@ app.use(cors({
     const originHost = u?.host || origin.replace(/^https?:\/\//, '');
     const originScheme = (u?.protocol as 'http:' | 'https:' | undefined);
 
-    const allowed = ALLOWED.some(a => {
+    let allowed = ALLOWED.some(a => {
       // Exact string match first (covers fully-qualified entries)
       if (origin === a.raw) return true;
 
@@ -161,6 +173,19 @@ app.use(cors({
 
       return false;
     });
+
+    // Fallback: allow if origin host ends with any domain in CORS_FALLBACK_ALLOW (scheme respected when provided)
+    if (!allowed) {
+      const host = originHost.toLowerCase();
+      const schemeOk = !originScheme || ['http:', 'https:'].includes(originScheme);
+      if (schemeOk) {
+        const hit = CORS_FALLBACK_ALLOW.some(dom => host === dom.toLowerCase() || host.endsWith(`.${dom.toLowerCase()}`));
+        if (hit) {
+          try { getLogger({ svc: 'api' }).warn(`CORS fallback allow matched for origin ${origin}`); } catch {}
+          allowed = true;
+        }
+      }
+    }
 
     if (allowed) return callback(null, true);
     return callback(new Error(`CORS blocked for origin: ${origin}`));
@@ -1508,9 +1533,10 @@ async function startServer() {
   // Connect MongoDB first (non-blocking with reduced timeout)
   const connectPromise = connectMongoDB();
   const timeoutPromise = new Promise((resolve) => setTimeout(() => {
-    console.warn('⏱️  MongoDB connection taking longer than expected, continuing startup...');
+    // Downgraded to warn classification; not a fatal error, just informational
+    getLogger({ svc: 'api' }).warn('MongoDB connection taking longer than expected (>6s). Continuing startup while retrying.');
     resolve(false);
-  }, 6000)); // Reduced from 8s to 6s
+  }, 6000)); // Wait 6s then proceed; watchdog handles reconnects
   
   await Promise.race([connectPromise, timeoutPromise]);
   
@@ -1518,8 +1544,9 @@ async function startServer() {
   const server = app.listen(port, '0.0.0.0', async () => {
     const log = getLogger({ svc: 'api' });
     log.info(`API listening on 0.0.0.0:${port} (LIGHT_MODE=${LIGHT_MODE}, via=${portVia})`);
-    log.info(`Health: http://localhost:${port}/health`);
-    log.info(`Full Health: http://localhost:${port}/health/full`);
+  log.info(`Health: http://localhost:${port}/health`);
+  log.info(`Full Health: http://localhost:${port}/health/full`);
+  log.info(`Mongo status at listen: ${db ? 'connected' : 'not-connected'}`);
   log.info(`CORS origins: ${ORIGINS.join(', ')}`);
     
     if (!db) {
