@@ -1195,7 +1195,17 @@ app.get('/live', (req, res) => {
   });
 });
 
-const port = Number(process.env.API_PORT || process.env.PORT || 3001);
+function resolvePort(): { port: number; via: 'PORT' | 'API_PORT' | 'default' } {
+  const isProd = (process.env.NODE_ENV || '').toLowerCase() === 'production';
+  // In production on platforms like Railway, always prefer PORT when provided
+  if (process.env.PORT) return { port: Number(process.env.PORT), via: 'PORT' };
+  if (!isProd && process.env.API_PORT) return { port: Number(process.env.API_PORT), via: 'API_PORT' };
+  // Fallbacks
+  if (process.env.API_PORT) return { port: Number(process.env.API_PORT), via: 'API_PORT' };
+  return { port: 3001, via: 'default' };
+}
+
+const { port, via: portVia } = resolvePort();
 
 // Simple owner auth middleware: checks X-Owner-Id header against OWNER_ID
 function ownerAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -1225,7 +1235,7 @@ async function startServer() {
   // Start listening regardless of MongoDB status
   const server = app.listen(port, '0.0.0.0', async () => {
     const log = getLogger({ svc: 'api' });
-    log.info(`API listening on 0.0.0.0:${port} (LIGHT_MODE=${LIGHT_MODE})`);
+    log.info(`API listening on 0.0.0.0:${port} (LIGHT_MODE=${LIGHT_MODE}, via=${portVia})`);
     log.info(`Health: http://localhost:${port}/health`);
     log.info(`Full Health: http://localhost:${port}/health/full`);
   log.info(`CORS origins: ${ORIGINS.join(', ')}`);
