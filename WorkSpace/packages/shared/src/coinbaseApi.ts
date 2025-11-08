@@ -41,8 +41,9 @@ export class CoinbaseApiClient {
   }
 
   private sign(timestamp: string, method: string, path: string, body = ''): string {
+    // Coinbase expects base64-encoded HMAC-SHA256 (for Advanced Trade HMAC keys)
     const message = timestamp + method + path + body;
-    return crypto.createHmac('sha256', this.apiSecret).update(message).digest('hex');
+    return crypto.createHmac('sha256', this.apiSecret).update(message).digest('base64');
   }
 
   private async request(method: string, path: string, body?: any): Promise<any> {
@@ -102,9 +103,11 @@ export class CoinbaseApiClient {
    * Get current spot price for a trading pair
    */
   async getSpotPrice(pair: string): Promise<number> {
+    // Public endpoint: no auth required
     // pair format: BTC-USD
-    const data = await this.request('GET', `/v2/prices/${pair}/spot`);
-    return parseFloat(data.data?.amount || '0');
+    const url = `${this.baseUrl}/v2/prices/${pair}/spot`;
+    const response = await axios.get(url, { timeout: 10000 });
+    return parseFloat(response.data?.data?.amount || '0');
   }
 
   /**
