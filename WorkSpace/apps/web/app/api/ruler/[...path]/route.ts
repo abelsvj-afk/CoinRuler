@@ -12,9 +12,10 @@ function getApiBase(): string {
   return base.replace(/\/$/, '');
 }
 
-async function forward(req: NextRequest, params: { path: string[] }) {
+async function forward(req: NextRequest, params: Promise<{ path: string[] }>) {
   const apiBase = getApiBase();
-  const path = params.path?.join('/') || '';
+  const resolvedParams = await params;
+  const path = resolvedParams.path?.join('/') || '';
   const targetUrl = `${apiBase}/${path}`;
 
   // Build init
@@ -44,8 +45,8 @@ async function forward(req: NextRequest, params: { path: string[] }) {
   });
 }
 
-export const GET = async (req: NextRequest, { params }: { params: { path: string[] } }) => forward(req, params);
-export const POST = async (req: NextRequest, { params }: { params: { path: string[] } }) => forward(req, params);
-export const PUT = async (req: NextRequest, { params }: { params: { path: string[] } }) => forward(req, params);
-export const PATCH = async (req: NextRequest, { params }: { params: { path: string[] } }) => forward(req, params);
-export const DELETE = async (req: NextRequest, { params }: { params: { path: string[] } }) => forward(req, params);
+export const GET = async (req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) => forward(req, params);
+export const POST = async (req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) => forward(req, params);
+export const PUT = async (req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) => forward(req, params);
+export const PATCH = async (req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) => forward(req, params);
+export const DELETE = async (req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) => forward(req, params);
