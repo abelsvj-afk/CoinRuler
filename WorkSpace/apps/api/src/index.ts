@@ -1093,9 +1093,10 @@ app.get('/dashboard', async (_req, res) => {
 app.get('/portfolio/current', async (_req, res) => {
   try {
     const latest = await db?.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
-    let balances: Record<string, number> = {};
-    let prices: Record<string, number> = {};
-    let usdTotal = 0;
+  // Build raw balances/prices, then filter to only assets with USD value > 0
+  let balances: Record<string, number> = {};
+  let prices: Record<string, number> = {};
+  let usdTotal = 0;
     if (latest) {
       prices = (latest as any)._prices || {};
       for (const k of Object.keys(latest)) {
@@ -1103,7 +1104,6 @@ app.get('/portfolio/current', async (_req, res) => {
         const qty = (latest as any)[k];
         if (typeof qty === 'number') {
           balances[k] = qty;
-          usdTotal += qty * (prices[k] || 0);
         }
       }
     } else if (hasCoinbaseCredentials()) {
@@ -1112,15 +1112,35 @@ app.get('/portfolio/current', async (_req, res) => {
         const client = getCoinbaseApiClient();
         balances = await client.getAllBalances();
         prices = await client.getSpotPrices(Object.keys(balances));
-        for (const c of Object.keys(balances)) usdTotal += (balances[c] || 0) * (prices[c] || 0);
+        // usdTotal will be recomputed after filtering below
       } catch {}
     }
-    // Baselines seed
+    // Load baselines first to determine which assets you've invested in
     const baselineDoc = await db?.collection('baselines').findOne({ key: 'owner' });
     let baselines = baselineDoc?.value || { BTC: { baseline: balances.BTC || 0 }, XRP: { baseline: Math.max(10, balances.XRP || 0) } };
     if (!baselineDoc && db) {
       await db.collection('baselines').insertOne({ key: 'owner', value: baselines, createdAt: new Date() });
     }
+    
+    // Filter to only crypto where you've invested money (baseline > 0 means you deposited)
+    const filteredBalances: Record<string, number> = {};
+    const filteredPrices: Record<string, number> = {};
+    usdTotal = 0;
+    for (const sym of Object.keys(balances)) {
+      const qty = balances[sym] || 0;
+      const baseline = baselines[sym]?.baseline || 0;
+      const px = prices[sym] || 0;
+      const usd = qty * px;
+      // Only show if you've invested (baseline > 0) and currently hold some (qty > 0)
+      if (qty > 0 && baseline > 0) {
+        filteredBalances[sym] = qty;
+        filteredPrices[sym] = px;
+        usdTotal += usd;
+      }
+    }
+    // Replace with filtered
+    balances = filteredBalances;
+    prices = filteredPrices;
     const ts = latest?.timestamp || null;
     const ageMs = ts ? Date.now() - new Date(ts).getTime() : null;
 
@@ -1165,8 +1185,8 @@ app.get('/portfolio/current', async (_req, res) => {
     } catch {}
 
     res.json({
-      balances,
-      prices,
+  balances,
+  prices,
       totalValueUSD: Number(usdTotal.toFixed(2)),
       baselines,
       xrpAboveBaseline: balances.XRP && baselines.XRP?.baseline ? Math.max(0, balances.XRP - baselines.XRP.baseline) : 0,
