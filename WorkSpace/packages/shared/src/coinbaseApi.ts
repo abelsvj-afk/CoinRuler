@@ -35,6 +35,14 @@ export interface CoinbaseCollateral {
   health: number; // health factor
 }
 
+// Paginated accounts response shape per /api/v3/brokerage/accounts
+export interface GetAccountsResponse {
+  accounts: CoinbaseAccount[];
+  has_next: boolean;
+  cursor?: string;
+  size?: number;
+}
+
 export class CoinbaseApiClient {
   private apiKey: string;
   private apiSecret: string;
@@ -91,12 +99,33 @@ export class CoinbaseApiClient {
   }
 
   /**
-   * Get all account balances
+   * Get all account balances (simple convenience wrapper)
    */
   async getAccounts(): Promise<CoinbaseAccount[]> {
-    const data = await this.request('GET', '/api/v3/brokerage/accounts');
-    if (!data.accounts || !Array.isArray(data.accounts)) return [];
-    return data.accounts;
+    const page = await this.getAccountsPage();
+    return page.accounts || [];
+  }
+
+  /**
+   * Get a paginated accounts page from Advanced Trade brokerage API.
+   * Supports limit (default 49, max 250) and cursor for pagination.
+   * Returns the raw response including has_next + cursor so callers can iterate.
+   * NOTE: This uses HMAC key auth (CB-ACCESS-* headers). If user supplies a CDP key (ECDSA),
+   * this endpoint will 401; caller should surface heuristic warning elsewhere.
+   */
+  async getAccountsPage(params: { limit?: number; cursor?: string } = {}): Promise<GetAccountsResponse> {
+    const { limit, cursor } = params;
+    const qs = new URLSearchParams();
+    if (limit && limit > 0) qs.set('limit', String(limit));
+    if (cursor) qs.set('cursor', cursor);
+    const path = '/api/v3/brokerage/accounts' + (qs.toString() ? `?${qs.toString()}` : '');
+    const data = await this.request('GET', path);
+    return {
+      accounts: Array.isArray(data.accounts) ? data.accounts : [],
+      has_next: Boolean(data.has_next),
+      cursor: data.cursor,
+      size: data.size,
+    };
   }
 
   /**
