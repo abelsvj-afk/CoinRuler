@@ -9,6 +9,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@coinruler/shared": "^0.1.0",
     "@coinruler/llm": "^0.1.0",
     "@coinruler/rules": "^0.1.0",
     "@types/cors": "^2.8.19",

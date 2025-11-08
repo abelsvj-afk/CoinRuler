@@ -5,37 +5,9 @@ import cors from 'cors';
 import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import { MongoClient, Db, ObjectId } from 'mongodb';
-import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation, getCoinbaseApiClient, validateEnv, isDryRun, getEnv, getLogger, hasCoinbaseCredentials } from '@coinruler/shared';
+import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation, getCoinbaseApiClient, validateEnv, isDryRun, getEnv, getLogger, hasCoinbaseCredentials, executeTrade, type TradeSide, type TradeResult } from '@coinruler/shared';
 // Lazy import of rules package (monorepo build order safety)
 import { parseRule, createRule as createRuleDoc, listRules as listRuleDocs, setRuleEnabled, evaluateRulesTick, runOptimizationCycle, backtestRule, getRiskState, recordExecution, type EvalContext, type RuleSpec, type BacktestConfig } from '@coinruler/rules';
-// Local simplified executeTrade (instead of cross-package deep import) to resolve rootDir errors
-type TradeSide = 'buy' | 'sell';
-interface TradeResult { ok: boolean; orderId?: string; status?: string; filledQty?: number; avgFillPrice?: number; error?: string; }
-async function executeTrade(opts: { side: TradeSide; symbol: string; amount: number; mode?: 'market' | 'limit'; limitPrice?: number; reason?: string; }): Promise<TradeResult> {
-  const log = getLogger({ svc: 'trade' });
-  const dryRun = isDryRun();
-  if (!opts.amount || opts.amount <= 0) return { ok: false, error: 'INVALID_AMOUNT' };
-  try {
-    const client = getCoinbaseApiClient();
-    if (opts.side === 'sell') {
-      const bal = await client.getBalance(opts.symbol);
-      if (bal < opts.amount) return { ok: false, error: 'INSUFFICIENT_BALANCE' };
-    }
-    const productId = `${opts.symbol}-USD`;
-    if ((opts.mode || 'market') === 'market') {
-      const resp = await client.placeMarketOrder(productId, opts.side, String(opts.amount), dryRun);
-      log.info({ order: resp, dryRun, reason: opts.reason }, 'Market order placed');
-      return { ok: true, orderId: resp.id || resp.orderId, status: resp.status || 'submitted', filledQty: Number(resp.filled_size || 0) };
-    } else {
-      if (dryRun) return { ok: true, orderId: 'dry-run-' + Date.now(), status: 'simulated' };
-      // TODO: Implement real limit order placement via Coinbase Advanced Trade once API wrapper exposes it safely
-      return { ok: false, error: 'LIMIT_NOT_IMPLEMENTED' };
-    }
-  } catch (e: any) {
-    log.error({ err: e?.message }, 'Trade execution failed');
-    return { ok: false, error: e?.message || String(e) };
-  }
-}
 import {
   getRotationStatus,
   rotateAPIKey,
@@ -546,7 +518,21 @@ app.post('/approvals/:id/execute', ownerAuth, async (req, res) => {
       ? Number((baseBalance * allocationPct).toFixed(6)) || 0.001
       : Math.min(Number((baseBalance * allocationPct).toFixed(6)), baseBalance);
     if (amount <= 0) return res.status(400).json({ error: 'Calculated amount <= 0; insufficient balance or allocation' });
-    const tradeRes = await executeTrade({ side, symbol, amount, mode: 'market', reason: `manual-exec:${id}` });
+    const risk = getRiskState();
+    const tradeRes = await executeTrade({
+      side,
+      symbol,
+      amount,
+      mode: 'market',
+      reason: `manual-exec:${id}`,
+      risk: {
+        tradesLastHour: (risk as any)?.tradesLastHour,
+        dailyLoss: (risk as any)?.dailyLoss,
+        killSwitch: false,
+        maxTradesHour: Number(process.env.AUTO_EXECUTE_RISK_MAX_TRADES_HOUR || '0'),
+        dailyLossLimit: Number(process.env.AUTO_EXECUTE_DAILY_LOSS_LIMIT || 'NaN'),
+      },
+    });
     // SSE trade events for clients
     try {
       liveEvents.emit('trade:submitted', { mode: 'manual', side, symbol, amount, ts: new Date().toISOString() });
@@ -1569,6 +1555,9 @@ app.get('/live', (req, res) => {
     // Map legacy/new snapshot events to portfolio:updated for UI compatibility
     'portfolio:snapshot': (data: any) => res.write(`data: ${JSON.stringify({ type: 'portfolio:updated', data })}\n\n`),
     'alert': (data: any) => res.write(`data: ${JSON.stringify({ type: 'alert', data })}\n\n`),
+    // Trade events
+    'trade:submitted': (data: any) => res.write(`data: ${JSON.stringify({ type: 'trade:submitted', data })}\n\n`),
+    'trade:result': (data: any) => res.write(`data: ${JSON.stringify({ type: 'trade:result', data })}\n\n`),
   } as Record<string, (d: any) => void>;
 
   Object.entries(handlers).forEach(([event, handler]) => liveEvents.on(event, handler));
@@ -1801,7 +1790,21 @@ async function startServer() {
                 const amount = side === 'buy'
                   ? Number((baseBalance * allocationPct).toFixed(6)) || 0.001
                   : Math.min(Number((baseBalance * allocationPct).toFixed(6)), baseBalance);
-                const tradeRes = await executeTrade({ side, symbol, amount, mode: 'market', reason: `auto-exec:${cand._id}` });
+                const risk = getRiskState();
+                const tradeRes = await executeTrade({
+                  side,
+                  symbol,
+                  amount,
+                  mode: 'market',
+                  reason: `auto-exec:${cand._id}`,
+                  risk: {
+                    tradesLastHour: (risk as any)?.tradesLastHour,
+                    dailyLoss: (risk as any)?.dailyLoss,
+                    killSwitch: false,
+                    maxTradesHour: Number(process.env.AUTO_EXECUTE_RISK_MAX_TRADES_HOUR || '0'),
+                    dailyLossLimit: Number(process.env.AUTO_EXECUTE_DAILY_LOSS_LIMIT || 'NaN'),
+                  },
+                });
                 const execDoc = {
                   ruleId: cand.intent.ruleId,
                   action: cand.intent.action,
