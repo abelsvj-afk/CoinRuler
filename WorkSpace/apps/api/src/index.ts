@@ -1228,6 +1228,9 @@ async function startServer() {
   let diagInterval: NodeJS.Timeout | null = null;
   let nightlyTimeout: NodeJS.Timeout | null = null;
   let snapshotInterval: NodeJS.Timeout | null = null;
+  let riskInterval: NodeJS.Timeout | null = null;
+  let riskBreachSince: Date | null = null;
+  let recoveryStart: Date | null = null;
 
   // Helper: create a live snapshot from Coinbase balances (internal reuse)
   async function createLiveSnapshot(reason: string) {
@@ -1574,6 +1577,83 @@ async function startServer() {
     } else {
       getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: automatic snapshots disabled');
     }
+
+    // ---- Dynamic Risk Throttles (auto kill-switch) ----
+    if (!LIGHT_MODE) {
+      const riskEnabled = (process.env.RISK_KILLSWITCH_ENABLED || 'true') === 'true';
+      if (riskEnabled) {
+        const maxTradesHr = Number(process.env.RISK_MAX_TRADES_HOUR || '8');
+        const dailyLossLimit = Number(process.env.RISK_DAILY_LOSS_LIMIT || '-2000');
+        const minCollateralHealth = Number(process.env.RISK_COLLATERAL_MIN_HEALTH || '0.5');
+        const recoveryGraceMin = Number(process.env.RISK_RECOVERY_GRACE_MIN || '10');
+        getLogger({ svc: 'api' }).info(`Risk throttles active (maxTradesHr=${maxTradesHr}, dailyLossLimit=${dailyLossLimit}, minHealth=${minCollateralHealth}, recoveryGraceMin=${recoveryGraceMin})`);
+        riskInterval = setInterval(async () => {
+          try {
+            const risk = getRiskState();
+            // Collateral health check
+            let minHealth = 1;
+            if (db) {
+              const coll = await db.collection('collateral').find({}).project({ health: 1 }).toArray();
+              if (coll.length > 0) minHealth = Math.min(...coll.map(c => typeof c.health === 'number' ? c.health : 1));
+            }
+            const tradeHot = typeof risk.tradesLastHour === 'number' && risk.tradesLastHour >= maxTradesHr;
+            const lossBreach = typeof risk.dailyLoss === 'number' && risk.dailyLoss <= dailyLossLimit;
+            const healthBreach = minHealth < minCollateralHealth;
+            const breach = tradeHot || lossBreach || healthBreach;
+            const now = new Date();
+            if (breach) {
+              riskBreachSince = riskBreachSince || now;
+              recoveryStart = null; // reset recovery
+              if (db) {
+                const ks = await db.collection('kill_switch').findOne({});
+                if (!ks?.enabled) {
+                  const doc: KillSwitch = {
+                    enabled: true,
+                    reason: `auto-risk: ${[
+                      tradeHot ? `trades/hr=${risk.tradesLastHour}` : null,
+                      lossBreach ? `dailyLoss=${risk.dailyLoss}` : null,
+                      healthBreach ? `minHealth=${minHealth.toFixed(2)}` : null,
+                    ].filter(Boolean).join(', ')}`,
+                    timestamp: now,
+                    setBy: 'system:risk',
+                  } as any;
+                  await db.collection('kill_switch').replaceOne({}, doc, { upsert: true });
+                  liveEvents.emit('killswitch:changed', doc);
+                  getLogger({ svc: 'api' }).warn({ doc }, 'Kill-switch enabled by risk throttles');
+                }
+              }
+            } else {
+              // Consider recovery if kill-switch is currently enabled
+              if (db) {
+                const ks = await db.collection('kill_switch').findOne({});
+                if (ks?.enabled) {
+                  recoveryStart = recoveryStart || now;
+                  const elapsedMin = (now.getTime() - recoveryStart.getTime()) / (60 * 1000);
+                  if (elapsedMin >= recoveryGraceMin) {
+                    const doc: KillSwitch = { enabled: false, reason: 'auto-recovery', timestamp: now, setBy: 'system:risk' } as any;
+                    await db.collection('kill_switch').replaceOne({}, doc, { upsert: true });
+                    liveEvents.emit('killswitch:changed', doc);
+                    getLogger({ svc: 'api' }).info('Kill-switch disabled after recovery grace period');
+                    riskBreachSince = null;
+                    recoveryStart = null;
+                  }
+                } else {
+                  // Not enabled, clear timers
+                  riskBreachSince = null;
+                  recoveryStart = null;
+                }
+              }
+            }
+          } catch (e: any) {
+            // keep silent, interval continues
+          }
+        }, 60_000);
+      } else {
+        getLogger({ svc: 'api' }).info('Risk throttles disabled by env');
+      }
+    } else {
+      getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: risk throttles disabled');
+    }
   });
 
   // Graceful shutdown
@@ -1586,6 +1666,7 @@ async function startServer() {
     try { clearInterval(diagInterval as any); } catch {}
     try { if (nightlyTimeout) clearTimeout(nightlyTimeout); } catch {}
     try { clearInterval(snapshotInterval as any); } catch {}
+    try { clearInterval(riskInterval as any); } catch {}
     process.exit(0);
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
