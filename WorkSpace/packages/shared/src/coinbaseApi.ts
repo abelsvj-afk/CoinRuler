@@ -112,39 +112,40 @@ export class CoinbaseApiClient {
    * Get all balances as a simple map
    */
   async getAllBalances(): Promise<Record<string, number>> {
+    const balances: Record<string, number> = {};
+    // Attempt brokerage accounts first, but don't fail hard
     try {
       const accounts = await this.getAccounts();
-      const balances: Record<string, number> = {};
       for (const account of accounts) {
         const available = parseFloat(account.available_balance.value);
         if (available > 0) balances[account.currency] = available;
       }
-      // If CDP SDK available, attempt wallet balance augmentation (non-fatal)
-      if (this.cdp) {
-        try {
-          const wallets = await this.cdp.listWallets?.();
-          if (Array.isArray(wallets)) {
-            for (const w of wallets) {
-              const assets = w?.assets || [];
-              for (const a of assets) {
-                const cur = a?.asset?.symbol || a?.symbol;
-                const amt = parseFloat(a?.quantity || a?.amount || '0');
-                if (cur && amt > 0) {
-                  balances[cur] = (balances[cur] || 0) + amt;
-                }
+    } catch (e) {
+      console.warn('[CoinbaseAPI] Brokerage accounts unavailable:', (e as any)?.message);
+    }
+
+    // Always attempt CDP wallet augmentation if SDK is available
+    if (this.cdp) {
+      try {
+        const wallets = await this.cdp.listWallets?.();
+        if (Array.isArray(wallets)) {
+          for (const w of wallets) {
+            const assets = w?.assets || [];
+            for (const a of assets) {
+              const cur = a?.asset?.symbol || a?.symbol;
+              const amt = parseFloat(a?.quantity || a?.amount || '0');
+              if (cur && amt > 0) {
+                balances[cur] = (balances[cur] || 0) + amt;
               }
             }
           }
-        } catch (e) {
-          console.warn('[CoinbaseAPI] CDP wallet augmentation failed:', (e as any)?.message);
         }
+      } catch (e) {
+        console.warn('[CoinbaseAPI] CDP wallet retrieval failed:', (e as any)?.message);
       }
-      return balances;
-    } catch (e) {
-      // Graceful fallback: return empty balances
-      console.warn('[CoinbaseAPI] getAllBalances failed:', (e as any)?.message);
-      return {};
     }
+
+    return balances;
   }
 
   /**
