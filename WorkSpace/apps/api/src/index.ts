@@ -320,6 +320,7 @@ app.get('/coinbase/status', async (_req, res) => {
     hasCredentials: hasCoinbaseCredentials(),
     keyLength: process.env.COINBASE_API_KEY?.length || 0,
     status: 'disabled',
+    advice: null,
   };
   if (!details.hasCredentials) {
     return res.json(details);
@@ -328,6 +329,14 @@ app.get('/coinbase/status', async (_req, res) => {
     const client = getCoinbaseApiClient();
     const ok = await client.testConnection();
     details.status = ok ? 'connected' : 'failed';
+    if (!ok) {
+      // Heuristic: If secret looks like base64 (likely CDP) but brokerage fails 401
+      const secret = process.env.COINBASE_API_SECRET || '';
+      const isLikelyBase64 = /^[A-Za-z0-9+/=]{32,}$/.test(secret) && secret.includes('=');
+      details.advice = isLikelyBase64
+        ? 'Brokerage Advanced Trade endpoints returning 401. Provided secret appears to be a CDP key. Generate a Coinbase Advanced Trade API key/secret (HMAC) in exchange profile and set COINBASE_API_KEY/COINBASE_API_SECRET. CDP wallets will not populate brokerage /api/v3/brokerage/accounts.'
+        : 'Authentication failed. Verify the API key has read permissions for accounts and trading. Regenerate if unsure.';
+    }
     // Try a lightweight balances fetch (sample only)
     try {
       const balances = await client.getAllBalances();
@@ -365,6 +374,23 @@ app.get('/coinbase/debug/cdp', ownerAuth, async (_req, res) => {
     res.json({ ok: true, sample });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Signature debug endpoint (owner only) to verify HMAC computation
+app.get('/coinbase/debug/signature', ownerAuth, async (req, res) => {
+  try {
+    if (!hasCoinbaseCredentials()) return res.status(400).json({ error: 'No credentials configured' });
+    const path = (req.query.path as string) || '/api/v3/brokerage/accounts';
+    const method = (req.query.method as string) || 'GET';
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const body = (req.query.body as string) || '';
+    const client = getCoinbaseApiClient();
+    // @ts-ignore access private sign
+    const signature = (client as any).sign(timestamp, method, path, body);
+    res.json({ timestamp, method, path, body: body || null, signature });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || String(e) });
   }
 });
 
