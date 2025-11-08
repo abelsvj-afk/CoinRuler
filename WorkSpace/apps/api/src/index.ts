@@ -8,6 +8,34 @@ import { MongoClient, Db, ObjectId } from 'mongodb';
 import { Approval, KillSwitch, PortfolioSnapshot, monteCarloSimulation, getCoinbaseApiClient, validateEnv, isDryRun, getEnv, getLogger, hasCoinbaseCredentials } from '@coinruler/shared';
 // Lazy import of rules package (monorepo build order safety)
 import { parseRule, createRule as createRuleDoc, listRules as listRuleDocs, setRuleEnabled, evaluateRulesTick, runOptimizationCycle, backtestRule, getRiskState, recordExecution, type EvalContext, type RuleSpec, type BacktestConfig } from '@coinruler/rules';
+// Local simplified executeTrade (instead of cross-package deep import) to resolve rootDir errors
+type TradeSide = 'buy' | 'sell';
+interface TradeResult { ok: boolean; orderId?: string; status?: string; filledQty?: number; avgFillPrice?: number; error?: string; }
+async function executeTrade(opts: { side: TradeSide; symbol: string; amount: number; mode?: 'market' | 'limit'; limitPrice?: number; reason?: string; }): Promise<TradeResult> {
+  const log = getLogger({ svc: 'trade' });
+  const dryRun = isDryRun();
+  if (!opts.amount || opts.amount <= 0) return { ok: false, error: 'INVALID_AMOUNT' };
+  try {
+    const client = getCoinbaseApiClient();
+    if (opts.side === 'sell') {
+      const bal = await client.getBalance(opts.symbol);
+      if (bal < opts.amount) return { ok: false, error: 'INSUFFICIENT_BALANCE' };
+    }
+    const productId = `${opts.symbol}-USD`;
+    if ((opts.mode || 'market') === 'market') {
+      const resp = await client.placeMarketOrder(productId, opts.side, String(opts.amount), dryRun);
+      log.info({ order: resp, dryRun, reason: opts.reason }, 'Market order placed');
+      return { ok: true, orderId: resp.id || resp.orderId, status: resp.status || 'submitted', filledQty: Number(resp.filled_size || 0) };
+    } else {
+      if (dryRun) return { ok: true, orderId: 'dry-run-' + Date.now(), status: 'simulated' };
+      // TODO: Implement real limit order placement via Coinbase Advanced Trade once API wrapper exposes it safely
+      return { ok: false, error: 'LIMIT_NOT_IMPLEMENTED' };
+    }
+  } catch (e: any) {
+    log.error({ err: e?.message }, 'Trade execution failed');
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
 import {
   getRotationStatus,
   rotateAPIKey,
@@ -128,6 +156,9 @@ function parseAllowed(originStr: string): AllowedOrigin {
 const ALLOWED: AllowedOrigin[] = ORIGINS.map(parseAllowed);
 // Fallback domains always permitted (suffix match) to avoid deploy lockouts when WEB_ORIGIN is misconfigured
 const CORS_FALLBACK_ALLOW = (process.env.CORS_FALLBACK_ALLOW || 'mycoinruler.xyz').split(',').map(s => s.trim()).filter(Boolean);
+// Metrics: track how many times fallback path was used vs regular allowlist
+let corsFallbackHits = 0;
+let corsAllowedHits = 0;
 
 // Diagnostics: log resolved CORS origins at startup (helps verify deployment picked up changes)
 try {
@@ -182,12 +213,16 @@ app.use(cors({
         const hit = CORS_FALLBACK_ALLOW.some(dom => host === dom.toLowerCase() || host.endsWith(`.${dom.toLowerCase()}`));
         if (hit) {
           try { getLogger({ svc: 'api' }).warn(`CORS fallback allow matched for origin ${origin}`); } catch {}
+          corsFallbackHits += 1;
           allowed = true;
         }
       }
     }
 
-    if (allowed) return callback(null, true);
+    if (allowed) {
+      corsAllowedHits += 1;
+      return callback(null, true);
+    }
     return callback(new Error(`CORS blocked for origin: ${origin}`));
   },
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
@@ -288,6 +323,22 @@ app.get('/env', (_req, res) => {
     backtestEveryHours: Number(process.env.BACKTEST_SCHED_HOURS || '24'),
     backtestLookbackDays: Number(process.env.BACKTEST_LOOKBACK_DAYS || '30'),
     backtestAutotuneEnabled: (process.env.BACKTEST_AUTOTUNE_ENABLED || 'true') === 'true',
+    corsMetrics: {
+      allowed: corsAllowedHits,
+      fallback: corsFallbackHits,
+      fallbackDomains: CORS_FALLBACK_ALLOW,
+    },
+  });
+});
+
+// CORS metrics endpoint (lightweight, no auth)
+app.get('/metrics/cors', (_req, res) => {
+  res.json({
+    allowed: corsAllowedHits,
+    fallback: corsFallbackHits,
+    ratioFallback: corsAllowedHits > 0 ? Number((corsFallbackHits / corsAllowedHits).toFixed(4)) : null,
+    fallbackDomains: CORS_FALLBACK_ALLOW,
+    originsConfigured: ORIGINS,
   });
 });
 
@@ -462,6 +513,60 @@ app.patch('/approvals/:id', ownerAuth, async (req, res) => {
     );
     liveEvents.emit('approval:updated', { id, status, actedBy }); // Broadcast to SSE clients
     res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Manual execution endpoint (owner only): place order for an approved intent.
+app.post('/approvals/:id/execute', ownerAuth, async (req, res) => {
+  if (!db) return res.status(503).json({ error: 'Database not connected' });
+  try {
+    const { id } = req.params;
+    const approval = await db.collection('approvals').findOne({ _id: new ObjectId(id) as any });
+    if (!approval) return res.status(404).json({ error: 'Approval not found' });
+    if (approval.status !== 'pending' && approval.status !== 'approved') {
+      return res.status(400).json({ error: 'Approval not executable in current status' });
+    }
+    // Derive trade details from intent metadata (simplified)
+    const intent = (approval as any).metadata?.intent;
+    if (!intent?.action) return res.status(400).json({ error: 'No intent action data' });
+    const action = intent.action;
+    const symbol = (action.symbol || 'BTC').toUpperCase();
+    const side: 'buy' | 'sell' = action.type === 'enter' ? 'buy' : action.type === 'exit' ? 'sell' : 'buy';
+    const allocationPct = Number(action.allocationPct || 0.01); // fallback tiny fraction
+    // Fetch balances for sizing
+    let balances: Record<string, number> = {};
+    if (hasCoinbaseCredentials()) {
+      try { balances = await getCoinbaseApiClient().getAllBalances(); } catch {}
+    }
+    const baseBalance = balances[symbol] || 0;
+    // Notional sizing: for buy, use allocationPct * existing BTC or fallback 0.001
+    const amount = side === 'buy'
+      ? Number((baseBalance * allocationPct).toFixed(6)) || 0.001
+      : Math.min(Number((baseBalance * allocationPct).toFixed(6)), baseBalance);
+    if (amount <= 0) return res.status(400).json({ error: 'Calculated amount <= 0; insufficient balance or allocation' });
+    const tradeRes = await executeTrade({ side, symbol, amount, mode: 'market', reason: `manual-exec:${id}` });
+    if (!tradeRes.ok) return res.status(500).json({ error: tradeRes.error || 'Trade failed' });
+    // Update approval
+    await db.collection('approvals').updateOne({ _id: new ObjectId(id) as any }, { $set: { status: 'executed', actedBy: 'owner:manual', actedAt: new Date() } });
+    // Record execution document
+    const execDoc = {
+      approvalId: id,
+      side,
+      symbol,
+      amount,
+      orderId: tradeRes.orderId,
+      status: tradeRes.status,
+      filledQty: tradeRes.filledQty,
+      avgFillPrice: tradeRes.avgFillPrice,
+      executedAt: new Date(),
+      mode: 'manual',
+      dryRun: isDryRun(),
+    };
+    await db.collection('executions').insertOne(execDoc as any);
+    liveEvents.emit('alert', { type: 'execution', severity: 'info', message: `Manual ${side} ${symbol} ${amount} (order=${tradeRes.orderId})`, data: execDoc, timestamp: new Date().toISOString() });
+    res.json({ ok: true, trade: tradeRes, execution: execDoc });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -818,6 +923,21 @@ app.get('/balances', async (_req, res) => {
 app.get('/approvals/pending', async (_req, res) => {
   try {
     const items = await db?.collection('approvals').find({ status: 'pending' }).sort({ createdAt: -1 }).limit(50).toArray() || [];
+    res.json({ count: items.length, items });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Recent executions listing
+app.get('/executions/recent', async (req, res) => {
+  try {
+    const limit = Math.min(100, Math.max(1, Number((req.query.limit as string) || '25')));
+    const items = await db?.collection('executions')
+      .find({})
+      .sort({ executedAt: -1 })
+      .limit(limit)
+      .toArray() || [];
     res.json({ count: items.length, items });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -1663,21 +1783,39 @@ async function startServer() {
                   { $set: { status: 'approved', actedBy: 'system:auto', actedAt: new Date() } }
                 );
                 // Record execution (simulated, platform trade execution is out of scope here)
+                // Translate intent to trade (market for now)
+                const intentAction = cand.intent.action;
+                const symbol = (intentAction.symbol || 'BTC').toUpperCase();
+                const side: 'buy' | 'sell' = intentAction.type === 'enter' ? 'buy' : intentAction.type === 'exit' ? 'sell' : 'buy';
+                let balances: Record<string, number> = {};
+                if (hasCoinbaseCredentials()) {
+                  try { balances = await getCoinbaseApiClient().getAllBalances(); } catch {}
+                }
+                const baseBalance = balances[symbol] || 0;
+                const allocationPct = Number(intentAction.allocationPct || 0.01);
+                const amount = side === 'buy'
+                  ? Number((baseBalance * allocationPct).toFixed(6)) || 0.001
+                  : Math.min(Number((baseBalance * allocationPct).toFixed(6)), baseBalance);
+                const tradeRes = await executeTrade({ side, symbol, amount, mode: 'market', reason: `auto-exec:${cand._id}` });
                 const execDoc = {
                   ruleId: cand.intent.ruleId,
                   action: cand.intent.action,
                   approvedId: cand._id,
                   executedAt: new Date(),
                   mode: 'auto',
-                  dryRun: false,
-                  notes: 'Auto-executed by scheduler',
+                  dryRun: isDryRun(),
+                  orderId: tradeRes.orderId,
+                  status: tradeRes.status,
+                  amount,
+                  side,
+                  symbol,
                 };
                 await db.collection('executions').insertOne(execDoc as any);
                 liveEvents.emit('alert', {
                   type: 'execution',
-                  severity: 'info',
-                  message: `Auto-executed ${cand.intent.action.type} for ${(cand.intent.action as any).symbol || 'MULTI'}`,
-                  data: execDoc,
+                  severity: tradeRes.ok ? 'info' : 'high',
+                  message: tradeRes.ok ? `Auto ${side} ${symbol} ${amount}` : `Auto trade failed ${side} ${symbol}`,
+                  data: { exec: execDoc, trade: tradeRes },
                   timestamp: new Date().toISOString(),
                 });
               }

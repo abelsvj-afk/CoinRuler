@@ -8,6 +8,7 @@
     "build": "cd WorkSpace && npm install && npm run build",
     "register-commands": "cd WorkSpace/apps/bot && node register-commands.js",
     "test": "jest",
+    "verify:api": "node scripts/verify_api.js --base %API_BASE% --origin %WEB_ORIGIN_ONE%",
     "lint": "eslint . --ext .js,.ts",
     "format": "prettier --write ."
   },
