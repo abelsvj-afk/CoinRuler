@@ -547,6 +547,11 @@ app.post('/approvals/:id/execute', ownerAuth, async (req, res) => {
       : Math.min(Number((baseBalance * allocationPct).toFixed(6)), baseBalance);
     if (amount <= 0) return res.status(400).json({ error: 'Calculated amount <= 0; insufficient balance or allocation' });
     const tradeRes = await executeTrade({ side, symbol, amount, mode: 'market', reason: `manual-exec:${id}` });
+    // SSE trade events for clients
+    try {
+      liveEvents.emit('trade:submitted', { mode: 'manual', side, symbol, amount, ts: new Date().toISOString() });
+      liveEvents.emit('trade:result', { mode: 'manual', ok: tradeRes.ok, orderId: tradeRes.orderId, status: tradeRes.status, ts: new Date().toISOString() });
+    } catch {}
     if (!tradeRes.ok) return res.status(500).json({ error: tradeRes.error || 'Trade failed' });
     // Update approval
     await db.collection('approvals').updateOne({ _id: new ObjectId(id) as any }, { $set: { status: 'executed', actedBy: 'owner:manual', actedAt: new Date() } });
@@ -1811,6 +1816,10 @@ async function startServer() {
                   symbol,
                 };
                 await db.collection('executions').insertOne(execDoc as any);
+                try {
+                  liveEvents.emit('trade:submitted', { mode: 'auto', side, symbol, amount, ruleId: cand.intent.ruleId, ts: new Date().toISOString() });
+                  liveEvents.emit('trade:result', { mode: 'auto', ok: tradeRes.ok, orderId: tradeRes.orderId, status: tradeRes.status, ruleId: cand.intent.ruleId, ts: new Date().toISOString() });
+                } catch {}
                 liveEvents.emit('alert', {
                   type: 'execution',
                   severity: tradeRes.ok ? 'info' : 'high',
