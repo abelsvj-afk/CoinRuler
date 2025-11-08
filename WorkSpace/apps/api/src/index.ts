@@ -1225,6 +1225,35 @@ async function startServer() {
   let perfInterval: NodeJS.Timeout | null = null;
   let diagInterval: NodeJS.Timeout | null = null;
   let nightlyTimeout: NodeJS.Timeout | null = null;
+  let snapshotInterval: NodeJS.Timeout | null = null;
+
+  // Helper: create a live snapshot from Coinbase balances (internal reuse)
+  async function createLiveSnapshot(reason: string) {
+    if (!db) return { skipped: 'db-not-connected' };
+    if (!hasCoinbaseCredentials()) return { skipped: 'coinbase-credentials-missing' };
+    try {
+      const client = getCoinbaseApiClient();
+      const balances = await client.getAllBalances();
+      const prices = await client.getSpotPrices(Object.keys(balances));
+      const snapshot = { ...balances, _prices: prices, timestamp: new Date(), reason };
+      await db.collection('snapshots').insertOne(snapshot);
+      // Initialize baselines if absent
+      const baselineDoc = await db.collection('baselines').findOne({ key: 'owner' });
+      if (!baselineDoc) {
+        const baselines = {
+          BTC: { baseline: balances.BTC || 0 },
+          XRP: { baseline: Math.max(10, balances.XRP || 0) },
+        };
+        await db.collection('baselines').insertOne({ key: 'owner', value: baselines, createdAt: new Date() });
+      }
+      liveEvents.emit('portfolio:snapshot', { snapshot, reason });
+      getLogger({ svc: 'api' }).info(`Auto snapshot stored (reason=${reason})`);
+      return { ok: true };
+    } catch (err: any) {
+      getLogger({ svc: 'api' }).warn({ err: err?.message }, 'Auto snapshot failed');
+      return { error: err?.message };
+    }
+  }
   
   // Connect MongoDB first (non-blocking with reduced timeout)
   const connectPromise = connectMongoDB();
@@ -1466,6 +1495,34 @@ async function startServer() {
     }
     
     getLogger({ svc: 'api' }).info('API fully initialized and ready for requests');
+
+    // ---- Automatic Snapshot System ----
+    // Skip in LIGHT_MODE to minimize background work
+    if (!LIGHT_MODE) {
+      try {
+        const existingCount = db ? await db.collection('snapshots').countDocuments() : 0;
+        if (existingCount === 0 && hasCoinbaseCredentials()) {
+          getLogger({ svc: 'api' }).info('No snapshots found – creating initial live snapshot...');
+          await createLiveSnapshot('initial-startup');
+        } else {
+          getLogger({ svc: 'api' }).info(`Snapshot count at startup: ${existingCount}`);
+        }
+        // Periodic snapshots (default every 60 minutes) configurable via SNAPSHOT_INTERVAL_MINUTES
+        const intervalMinutes = Number(process.env.SNAPSHOT_INTERVAL_MINUTES || '60');
+        if (intervalMinutes > 0 && hasCoinbaseCredentials()) {
+          snapshotInterval = setInterval(() => {
+            createLiveSnapshot('scheduled-interval').catch(() => {});
+          }, intervalMinutes * 60 * 1000);
+          getLogger({ svc: 'api' }).info(`Scheduled automatic snapshots every ${intervalMinutes}m`);
+        } else {
+          getLogger({ svc: 'api' }).info('Automatic snapshot scheduler disabled (interval <= 0 or credentials missing)');
+        }
+      } catch (e: any) {
+        getLogger({ svc: 'api' }).warn({ err: e?.message }, 'Failed to initialize automatic snapshot system');
+      }
+    } else {
+      getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: automatic snapshots disabled');
+    }
   });
 
   // Graceful shutdown
@@ -1477,6 +1534,7 @@ async function startServer() {
     try { clearInterval(perfInterval as any); } catch {}
     try { clearInterval(diagInterval as any); } catch {}
     try { if (nightlyTimeout) clearTimeout(nightlyTimeout); } catch {}
+    try { clearInterval(snapshotInterval as any); } catch {}
     process.exit(0);
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
