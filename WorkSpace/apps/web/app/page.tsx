@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
-import { TrendingUp, AlertTriangle, DollarSign, Activity, Shield, Zap } from "lucide-react";
+import { useEffect, useState, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { TrendingUp, AlertTriangle, DollarSign, Activity, Shield, Zap, Bell, X } from "lucide-react";
 import { Card, StatCard } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { getApiBase, apiPost } from "./lib/api";
 import { useRouter } from "next/navigation";
 import { SSEStatus } from "./components/SSEStatus";
+import { useSSE, type SSEEvent } from "./lib/useSSE";
 
 type DashboardResponse = {
   portfolio: any;
@@ -21,6 +22,13 @@ type HealthResponse = {
   db: string;
 };
 
+type Toast = {
+  id: string;
+  type: 'info' | 'success' | 'warning' | 'error';
+  title: string;
+  message: string;
+};
+
 export default function HomePage() {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
@@ -28,8 +36,67 @@ export default function HomePage() {
   const [snapshotBusy, setSnapshotBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const apiBase = getApiBase();
   const router = useRouter();
+
+  // Toast helpers
+  const showToast = useCallback((type: Toast['type'], title: string, message: string) => {
+    const id = `${Date.now()}-${Math.random()}`;
+    setToasts(prev => [...prev, { id, type, title, message }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 5000);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  // Handle SSE events
+  const handleSSEEvent = useCallback((event: SSEEvent) => {
+    console.log('[HomePage] SSE event:', event);
+    
+    switch (event.type) {
+      case 'approval:created':
+        showToast('warning', '📋 Approval Required', event.data?.title || 'New trade requires approval');
+        // Refresh approvals
+        fetch(`${apiBase}/dashboard`).then(r => r.json()).then(d => setData(d)).catch(console.error);
+        break;
+        
+      case 'approval:updated':
+        showToast('info', '✅ Approval Updated', event.data?.status || 'Approval status changed');
+        fetch(`${apiBase}/dashboard`).then(r => r.json()).then(d => setData(d)).catch(console.error);
+        break;
+        
+      case 'portfolio:updated':
+        showToast('success', '💰 Portfolio Updated', 'Live balances refreshed');
+        // Refresh portfolio
+        fetch(`${apiBase}/portfolio/current`).then(r => r.json()).then(p => setPortfolio(p)).catch(console.error);
+        break;
+        
+      case 'killswitch:changed':
+        const enabled = event.data?.enabled;
+        showToast(enabled ? 'error' : 'success', 
+          enabled ? '🚨 Kill Switch Activated' : '✅ Kill Switch Cleared',
+          event.data?.reason || (enabled ? 'Trading halted' : 'Trading resumed'));
+        fetch(`${apiBase}/dashboard`).then(r => r.json()).then(d => setData(d)).catch(console.error);
+        break;
+        
+      case 'alert':
+        const severity = event.data?.severity || 'info';
+        const typeMap: Record<string, Toast['type']> = { critical: 'error', warning: 'warning', info: 'info' };
+        showToast(typeMap[severity] || 'info', '🔔 Alert', event.data?.message || 'New system alert');
+        break;
+        
+      case 'connected':
+        console.log('[HomePage] SSE connected');
+        break;
+    }
+  }, [apiBase, showToast]);
+
+  // Connect to SSE
+  useSSE(`${apiBase}/live`, handleSSEEvent);
 
   useEffect(() => {
     let isMounted = true;
@@ -482,6 +549,39 @@ export default function HomePage() {
         ) : (
           <p className="text-white/40">No reports yet</p>
         )}
+      </div>
+
+      {/* Live Toast Notifications */}
+      <div className="fixed bottom-8 right-8 z-50 space-y-3 max-w-sm">
+        <AnimatePresence>
+          {toasts.map(toast => (
+            <motion.div
+              key={toast.id}
+              initial={{ opacity: 0, x: 100, scale: 0.8 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              exit={{ opacity: 0, x: 100, scale: 0.8 }}
+              className={`glass-strong rounded-xl p-4 border-l-4 shadow-2xl ${
+                toast.type === 'error' ? 'border-red-500' :
+                toast.type === 'warning' ? 'border-yellow-500' :
+                toast.type === 'success' ? 'border-green-500' :
+                'border-blue-500'
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <div className="flex-1">
+                  <div className="font-bold text-sm mb-1">{toast.title}</div>
+                  <div className="text-xs text-white/70">{toast.message}</div>
+                </div>
+                <button
+                  onClick={() => dismissToast(toast.id)}
+                  className="p-1 hover:bg-white/10 rounded transition-colors"
+                >
+                  <X className="w-4 h-4 text-white/50" />
+                </button>
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
     </div>
   );
