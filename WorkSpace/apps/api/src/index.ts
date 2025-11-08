@@ -553,7 +553,17 @@ app.post('/portfolio/snapshot/force', async (req, res) => {
     }
     
     liveEvents.emit('portfolio:snapshot', { snapshot, reason: 'force-refresh' });
-    
+    // Persist alert for audit
+    try {
+      await db.collection('alerts').insertOne({
+        type: 'snapshot',
+        severity: 'info',
+        message: 'Manual live snapshot created',
+        data: { reason: 'force-refresh' },
+        ts: new Date(),
+      });
+    } catch {}
+
     res.json({ ok: true, snapshot, message: 'Snapshot created from live Coinbase data' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -677,6 +687,46 @@ app.get('/portfolio/current', async (_req, res) => {
     }
     const ts = latest?.timestamp || null;
     const ageMs = ts ? Date.now() - new Date(ts).getTime() : null;
+
+    // 24h price & portfolio change
+    let totalChange24hPct: number | null = null;
+    const priceChange24hPct: Record<string, number> = {};
+    if (db && ts) {
+      const since = new Date(new Date(ts as any).getTime() - 24*60*60*1000);
+      const prev = await db.collection('snapshots').findOne({ timestamp: { $lte: since } }, { sort: { timestamp: -1 } });
+      if (prev) {
+        const prevPrices = (prev as any)._prices || {};
+        for (const c of Object.keys(prices)) {
+          const p0 = prevPrices[c];
+          const p1 = prices[c];
+          if (typeof p0 === 'number' && p0 > 0 && typeof p1 === 'number') {
+            priceChange24hPct[c] = ((p1 - p0) / p0) * 100;
+          }
+        }
+        let prevTotal = 0;
+        for (const c of Object.keys(balances)) {
+          const qty = balances[c] || 0;
+          const p0 = prevPrices[c] || 0;
+          prevTotal += qty * p0;
+        }
+        if (prevTotal > 0) totalChange24hPct = ((usdTotal - prevTotal) / prevTotal) * 100;
+      }
+    }
+
+    // Collateral summary (worst-case LTV + locked BTC)
+    let collateralSummary: any = null;
+    try {
+      const collDocs = await db?.collection('collateral').find({}).toArray();
+      if (collDocs && collDocs.length) {
+        const btc = collDocs.filter((c: any) => (c.currency || '').toUpperCase() === 'BTC');
+        const btcLocked = btc.reduce((s: number, c: any) => s + (c.locked || 0), 0);
+        const btcFree = balances.BTC || 0;
+        const ltvs = collDocs.map((c: any) => typeof c.ltv === 'number' ? c.ltv : null).filter((x: any) => x !== null);
+        const ltv = ltvs.length ? Math.max(...ltvs) : null;
+        collateralSummary = { btcLocked, btcFree, ltv };
+      }
+    } catch {}
+
     res.json({
       balances,
       prices,
@@ -684,6 +734,9 @@ app.get('/portfolio/current', async (_req, res) => {
       baselines,
       xrpAboveBaseline: balances.XRP && baselines.XRP?.baseline ? Math.max(0, balances.XRP - baselines.XRP.baseline) : 0,
       btcFree: balances.BTC || 0, // collateral lock handled separately
+      totalChange24hPct,
+      priceChange24hPct,
+      collateral: collateralSummary,
       updatedAt: ts,
       ageMs,
       hasData: Object.keys(balances).length > 0,
@@ -770,6 +823,72 @@ app.get('/analysis/projection', async (_req, res) => {
       },
       timestamp: new Date().toISOString(),
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Price analytics: SMA(7/30), 24h return, 7d volatility for selected coins
+app.get('/analysis/prices', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const coins = ((req.query.coins as string) || 'BTC,XRP,USDC').split(',').map(c => c.trim().toUpperCase()).filter(Boolean);
+    const limitDays = Math.max(7, Math.min(60, Number((req.query.days as string) || '60')));
+    const since = new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000);
+    const snaps = await db.collection('snapshots')
+      .find({ timestamp: { $gte: since } })
+      .project({ _prices: 1, timestamp: 1 })
+      .sort({ timestamp: 1 })
+      .limit(limitDays * 500) // guard
+      .toArray();
+    const series: Record<string, Array<{ t: Date; p: number }>> = {};
+    for (const c of coins) series[c] = [];
+    for (const s of snaps) {
+      const prices = (s as any)._prices || {};
+      for (const c of coins) {
+        const p = prices[c];
+        if (typeof p === 'number' && p > 0) series[c].push({ t: new Date((s as any).timestamp), p });
+      }
+    }
+    function sma(arr: number[], w: number) {
+      if (arr.length < w) return null;
+      const tail = arr.slice(-w);
+      return tail.reduce((a,b)=>a+b,0)/tail.length;
+    }
+    function volatility(arr: number[], days: number) {
+      if (arr.length < days+1) return null;
+      const tail = arr.slice(-days-1);
+      const rets: number[] = [];
+      for (let i=1;i<tail.length;i++) rets.push((tail[i]-tail[i-1])/tail[i-1]);
+      if (!rets.length) return null;
+      const mean = rets.reduce((a,b)=>a+b,0)/rets.length;
+      const variance = rets.reduce((a,b)=>a+Math.pow(b-mean,2),0)/(rets.length-1 || 1);
+      return Math.sqrt(variance);
+    }
+    const out: any = { generatedAt: new Date().toISOString(), coins: {} };
+    for (const c of coins) {
+      const pts = series[c];
+      if (!pts.length) continue;
+      const pricesOnly = pts.map(x=>x.p);
+      const pNow = pricesOnly[pricesOnly.length-1];
+      let p24h: number | null = null;
+      // Find price closest to 24h ago
+      const target = Date.now() - 24*60*60*1000;
+      for (let i=pricesOnly.length-1;i>=0;i--) {
+        const t = pts[i].t.getTime();
+        if (t <= target) { p24h = pts[i].p; break; }
+      }
+      const ret24hPct = (p24h && p24h > 0) ? ((pNow - p24h) / p24h) * 100 : null;
+      out.coins[c] = {
+        last: pNow,
+        sma7: sma(pricesOnly,7),
+        sma30: sma(pricesOnly,30),
+        return24hPct: ret24hPct,
+        volatility7d: volatility(pricesOnly,7),
+        points: pts.length,
+      };
+    }
+    res.json(out);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -184,6 +184,8 @@ export default function HomePage() {
   const baselines = portfolio?.baselines || {};
   const xrpAboveBaseline = portfolio?.xrpAboveBaseline || 0;
   const btcFree = portfolio?.btcFree || 0;
+  const ltv = portfolio?.collateral?.ltv ?? null;
+  const btcLocked = portfolio?.collateral?.btcLocked ?? null;
   const hasData = portfolio?.hasData || false;
   const updatedAt = portfolio?.updatedAt;
   const ageMs = portfolio?.ageMs;
@@ -283,12 +285,19 @@ export default function HomePage() {
       )}
 
       {/* Stats */}
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
-        <StatCard label="Total Value" value={`$${totalValueUSD.toFixed(2)}`} change={hasData ? 5.2 : undefined} trend={hasData ? 'up' : undefined} icon={<DollarSign className="w-5 h-5 text-[#FFB800]" />} />
-        <StatCard label="BTC Holdings" value={`${(balances.BTC || 0).toFixed(8)}`} change={hasData ? 2.1 : undefined} trend={hasData ? 'up' : undefined} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
-        <StatCard label="XRP Holdings" value={`${(balances.XRP || 0).toFixed(2)}`} change={hasData && balances.XRP ? 1.5 : undefined} trend={hasData ? 'up' : undefined} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
+  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-6 mb-8">
+  <StatCard label="Total Value" value={`$${totalValueUSD.toFixed(2)}`} change={portfolio?.totalChange24hPct ?? undefined} trend={(portfolio?.totalChange24hPct ?? 0) >= 0 ? 'up' : 'down'} icon={<DollarSign className="w-5 h-5 text-[#FFB800]" />} />
+  <StatCard label="BTC Holdings" value={`${(balances.BTC || 0).toFixed(8)}`} change={portfolio?.priceChange24hPct?.BTC ?? undefined} trend={(portfolio?.priceChange24hPct?.BTC ?? 0) >= 0 ? 'up' : 'down'} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
+  <StatCard label="XRP Holdings" value={`${(balances.XRP || 0).toFixed(2)}`} change={portfolio?.priceChange24hPct?.XRP ?? undefined} trend={(portfolio?.priceChange24hPct?.XRP ?? 0) >= 0 ? 'up' : 'down'} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
+  <StatCard label="USDC Holdings" value={`$${(balances.USDC || 0).toFixed(2)}`} change={portfolio?.priceChange24hPct?.USDC ?? undefined} trend={(portfolio?.priceChange24hPct?.USDC ?? 0) >= 0 ? 'up' : 'down'} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
         <StatCard label="Active Trades" value={approvals.length} icon={<Activity className="w-5 h-5 text-[#FFB800]" />} />
         <StatCard label="System Status" value={killSwitch.enabled ? "Halted" : hasData ? "Active" : "No Data"} icon={<Shield className="w-5 h-5 text-[#FFB800]" />} />
+        {ltv !== null && (
+          <StatCard label="LTV" value={`${(ltv*100).toFixed(1)}%`} change={undefined} icon={<Shield className="w-5 h-5 text-[#FFB800]" />} />
+        )}
+        {btcLocked !== null && (
+          <StatCard label="BTC Locked" value={`${Number(btcLocked).toFixed(8)}`} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
+        )}
       </motion.div>
 
       {/* Main grid */}
