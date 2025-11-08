@@ -2,7 +2,7 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   rootDir: '../../',
-  roots: ['<rootDir>/apps/api/src'],
+  roots: ['<rootDir>/apps/api/src', '<rootDir>/apps/api/tests'],
   testMatch: ['**/__tests__/**/*.ts', '**/?(*.)+(spec|test).ts'],
   moduleNameMapper: {
     '^@coinruler/(.*)$': '<rootDir>/packages/$1/src',

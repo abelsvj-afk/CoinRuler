@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "ts-node --transpile-only src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js"
+    "start": "node dist/bootstrap.js",
+    "test": "jest"
   },
   "dependencies": {
     "@coinruler/llm": "^0.1.0",
@@ -20,12 +21,13 @@
     "helmet": "^7.1.0",
     "mongodb": "^6.9.0",
     "morgan": "^1.10.0",
-    "viem": "^2.38.6",
-    "wagmi": "^2.19.2",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/morgan": "^1.9.10",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5"
   }

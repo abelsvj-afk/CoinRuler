@@ -27,6 +27,7 @@ import { checkBTCSellAllowed, monitorLTV, type CollateralStatus } from './collat
 import { requiresMFA, requestMFA, verifyMFA, cleanupExpiredMFA, getPendingMFA } from './mfa';
 import { generateDailyLearning, scheduleDailyLearning } from './learningSystem';
 import { scanProfitOpportunities, createProfitTakingApproval } from './profitTaking';
+import { fetchFearGreedIndex, storeFearGreed, latestFearGreed } from './macroSentiment';
 
 // Coinbase WebSocket for live prices (browser environment compatibility)
 let coinbaseWsClient: any = null;
@@ -80,10 +81,9 @@ try {
   process.env.LIGHT_MODE = 'true';
 }
 
-// Real-time event emitter for SSE
-const liveEvents = new EventEmitter();
+// Real-time event emitter for SSE (shared across modules)
+import { liveEvents } from './events';
 let sseClientCount = 0;
-liveEvents.setMaxListeners(200); // Support many concurrent SSE clients (increased from 100)
 
 const app = express();
 
@@ -290,11 +290,14 @@ async function connectMongoDB() {
 app.get('/health', (_req, res) => res.json({ ok: true, db: db ? 'connected' : 'disconnected', dryRun: isDryRun() }));
 
 // Quick env diagnostics (safe subset only)
+let ACTIVE_PORT: number | null = null; // will be set after successful listen
 app.get('/env', (_req, res) => {
   res.json({
     ok: true,
     origins: ORIGINS,
-    port: Number(process.env.API_PORT || process.env.PORT || 3001),
+    configuredPort: Number(process.env.API_PORT || process.env.PORT || 3001),
+    activePort: ACTIVE_PORT,
+    portSource: ACTIVE_PORT ? 'resolved' : 'pending',
     hasMongoUri: !!process.env.MONGODB_URI,
     hasOwnerId: !!getEnv().OWNER_ID,
     hasCoinbaseKey: !!process.env.COINBASE_API_KEY,
@@ -637,15 +640,30 @@ app.get('/health/full', async (_req, res) => {
           const collateral = await coinbaseClient.getCollateral();
           checks.coinbase.collateral = collateral;
           
-          // Store collateral in MongoDB for risk layer
-          if (db && collateral.length > 0) {
-            await db.collection('collateral').deleteMany({}); // Clear old data
-            await db.collection('collateral').insertMany(
-              collateral.map((c: any) => ({
-                ...c,
-                updatedAt: new Date(),
-              }))
-            );
+          // Store collateral in MongoDB for risk layer and emit update event
+          if (db) {
+            await db.collection('collateral').deleteMany({}); // Replace with latest
+            if (collateral.length > 0) {
+              await db.collection('collateral').insertMany(
+                collateral.map((c: any) => ({
+                  ...c,
+                  updatedAt: new Date(),
+                }))
+              );
+            }
+            // Emit lightweight summary for UI Activity feed
+            try {
+              const btc = collateral.filter((c: any) => (c.currency || '').toUpperCase() === 'BTC');
+              const btcLocked = btc.reduce((s: number, c: any) => s + (c.locked || 0), 0);
+              const maxLTV = collateral.map((c: any) => typeof c.ltv === 'number' ? c.ltv : null).filter((x: any) => x !== null).reduce((m: number, v: number) => Math.max(m, v), 0);
+              liveEvents.emit('alert', {
+                type: 'collateral',
+                severity: maxLTV > 0.6 ? 'warning' : 'info',
+                message: `Collateral updated: BTC locked ${btcLocked.toFixed(8)} (LTV ${maxLTV ? (maxLTV*100).toFixed(1)+'%' : 'n/a'})`,
+                data: { btcLocked, maxLTV },
+                timestamp: new Date().toISOString(),
+              });
+            } catch {}
           }
         } catch (collateralErr: any) {
           checks.coinbase.collateralError = collateralErr.message;
@@ -1225,6 +1243,89 @@ app.get('/executions/recent', async (req, res) => {
   }
 });
 
+// Profit-taking summary and recent profits (USDC-targeted)
+app.get('/profits/recent', async (req, res) => {
+  try {
+    const limit = Math.min(100, Math.max(1, Number((req.query.limit as string) || '50')));
+    const items = await db?.collection('executions')
+      .find({ type: 'profit-taking' })
+      .sort({ executedAt: -1 })
+      .limit(limit)
+      .toArray() || [];
+    const totalNetUSD = items.reduce((s: number, e: any) => s + (e.estimatedNetUSD || 0), 0);
+    const byAsset: Record<string, { count: number; netUSD: number }> = {};
+    for (const e of items) {
+      const k = (e.symbol || 'ASSET') as string;
+      byAsset[k] = byAsset[k] || { count: 0, netUSD: 0 };
+      byAsset[k].count += 1;
+      byAsset[k].netUSD += e.estimatedNetUSD || 0;
+    }
+    // Include USDC yield accrual
+    let yieldData: any = null;
+    try {
+      const { computeUSDCYield } = await import('./usdcYield');
+      yieldData = db ? await computeUSDCYield(db) : null;
+    } catch {}
+    res.json({ count: items.length, totalNetUSD, byAsset, items, usdcYield: yieldData });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Macro sentiment (Fear & Greed) latest value
+app.get('/macro/sentiment', async (_req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const latest = await latestFearGreed(db);
+    res.json({ ok: true, latest });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Knowledge Store endpoints
+app.post('/knowledge/ingest', ownerAuth, async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const { ingestKnowledge } = await import('./knowledgeStore');
+    const id = await ingestKnowledge(db, req.body);
+    res.json({ ok: true, id });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/knowledge/query', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const { queryKnowledge } = await import('./knowledgeStore');
+    const { type, tags, minConfidence, minRelevance, limit, sortBy } = req.query as any;
+    const docs = await queryKnowledge(db, {
+      type,
+      tags: tags ? tags.split(',') : undefined,
+      minConfidence: minConfidence ? parseFloat(minConfidence) : undefined,
+      minRelevance: minRelevance ? parseFloat(minRelevance) : undefined,
+      limit: limit ? parseInt(limit) : undefined,
+      sortBy,
+    });
+    res.json({ count: docs.length, items: docs });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/knowledge/context', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const { getAIChatContext } = await import('./knowledgeStore');
+    const tags = (req.query.tags as string)?.split(',') || [];
+    const context = await getAIChatContext(db, tags);
+    res.json({ context });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Simple projection endpoint combining Monte Carlo & placeholder ML confidence
 app.get('/analysis/projection', async (_req, res) => {
   try {
@@ -1534,32 +1635,41 @@ app.get('/chat/history', async (req, res) => {
 app.get('/collateral/status', async (_req, res) => {
   try {
     if (!db) return res.status(503).json({ error: 'Database not connected' });
-    
+
     const collateralDocs = await db.collection('collateral').find({}).toArray();
-    const btcCollateral = collateralDocs.filter((c: any) => 
-      (c.currency || '').toUpperCase() === 'BTC'
-    );
-    
-    const btcLocked = btcCollateral.reduce((sum: number, c: any) => 
-      sum + (c.locked || 0), 0
-    );
-    
+    const btcCollateral = collateralDocs.filter((c: any) => (c.currency || '').toUpperCase() === 'BTC');
+
+    const btcLocked = btcCollateral.reduce((sum: number, c: any) => sum + (c.locked || 0), 0);
+
     const latest = await db.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
+    const prices = (latest as any)?._prices || {};
     const btcTotal = (latest as any)?.BTC || 0;
     const btcFree = Math.max(0, btcTotal - btcLocked);
-    
-    const ltvs = collateralDocs
-      .map((c: any) => c.ltv)
-      .filter((ltv: any) => typeof ltv === 'number');
+
+    const ltvs = collateralDocs.map((c: any) => c.ltv).filter((ltv: any) => typeof ltv === 'number');
     const maxLTV = ltvs.length ? Math.max(...ltvs) : null;
-    
+
+    const lockedPct = btcTotal > 0 ? btcLocked / btcTotal : 0;
+    const btcExposureUSD = btcTotal * (prices.BTC || 0);
+    const btcLockedUSD = btcLocked * (prices.BTC || 0);
+    const btcFreeUSD = btcFree * (prices.BTC || 0);
+    const ltvPct = maxLTV !== null ? maxLTV * 100 : null;
+
     res.json({
       btcTotal,
       btcLocked,
       btcFree,
+      btcExposureUSD: Number(btcExposureUSD.toFixed(2)),
+      btcLockedUSD: Number(btcLockedUSD.toFixed(2)),
+      btcFreeUSD: Number(btcFreeUSD.toFixed(2)),
+      lockedPct: Number((lockedPct * 100).toFixed(2)),
       maxLTV,
+      ltvPct,
       collateralPositions: collateralDocs.length,
+      collateralFlag: btcLocked > 0 ? 'BTC is being used as loan collateral' : 'No BTC collateral lock',
       warning: maxLTV && maxLTV > 0.6 ? 'High LTV detected' : null,
+      updatedAt: latest?.timestamp || null,
+      hasCollateral: collateralDocs.length > 0,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2041,6 +2151,19 @@ app.get('/intelligence', async (_req, res) => {
   }
 });
 
+// ML Events endpoint
+app.get('/ml/events', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const { getRecentMLEvents } = await import('./mlEvents');
+    const limit = Math.min(100, Math.max(1, Number((req.query.limit as string) || '50')));
+    const events = await getRecentMLEvents(db, limit);
+    res.json({ count: events.length, items: events });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // SSE endpoint for live updates
 app.get('/live', (req, res) => {
   res.set({
@@ -2166,11 +2289,46 @@ async function startServer() {
   await Promise.race([connectPromise, timeoutPromise]);
   
   // Start listening regardless of MongoDB status
-  const server = app.listen(port, '0.0.0.0', async () => {
-    const log = getLogger({ svc: 'api' });
-    log.info(`API listening on 0.0.0.0:${port} (LIGHT_MODE=${LIGHT_MODE}, via=${portVia})`);
-  log.info(`Health: http://localhost:${port}/health`);
-  log.info(`Full Health: http://localhost:${port}/health/full`);
+  // ---- Robust port binding with automatic retry (EADDRINUSE) ----
+  let server: any = null;
+  async function bindPort(basePort: number, maxAttempts: number = 5): Promise<number> {
+    let attempt = 0;
+    while (attempt < maxAttempts) {
+      const candidate = basePort + attempt;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const srv = app.listen(candidate, '0.0.0.0', () => {
+            ACTIVE_PORT = candidate;
+            server = srv;
+            resolve();
+          });
+          srv.on('error', (err: any) => {
+            if (err && err.code === 'EADDRINUSE') {
+              srv.close?.();
+              reject(err);
+            } else {
+              reject(err);
+            }
+          });
+        });
+        return candidate; // success
+      } catch (err: any) {
+        if (err.code === 'EADDRINUSE') {
+          getLogger({ svc: 'api' }).warn(`Port ${candidate} in use, retrying with ${candidate + 1}...`);
+          attempt += 1;
+          continue;
+        }
+        throw err; // non-address error
+      }
+    }
+    throw new Error(`Unable to bind any port in range ${basePort}-${basePort + maxAttempts - 1}`);
+  }
+
+  const boundPort = await bindPort(port, 5);
+  const log = getLogger({ svc: 'api' });
+  log.info(`API listening on 0.0.0.0:${boundPort} (LIGHT_MODE=${LIGHT_MODE}, via=${portVia}, attempts<=5)`);
+  log.info(`Health: http://localhost:${boundPort}/health`);
+  log.info(`Full Health: http://localhost:${boundPort}/health/full`);
   log.info(`Mongo status at listen: ${db ? 'connected' : 'not-connected'}`);
   log.info(`CORS origins: ${ORIGINS.join(', ')}`);
     
@@ -2233,6 +2391,29 @@ async function startServer() {
             });
           });
         }, 5 * 60 * 1000);
+
+        // Macro sentiment fetch (Fear & Greed) every hour
+        setInterval(async () => {
+          if (!db) return;
+          try {
+            const fg = await fetchFearGreedIndex();
+            await storeFearGreed(db, fg);
+            liveEvents.emit('alert', {
+              type: 'macro_feargreed',
+              severity: 'info',
+              message: `Fear & Greed Index: ${fg.value !== null ? fg.value : 'n/a'}`,
+              data: fg,
+              timestamp: new Date().toISOString(),
+            });
+          } catch (e: any) {
+            liveEvents.emit('alert', {
+              type: 'macro_feargreed',
+              severity: 'warning',
+              message: `Fear & Greed fetch failed: ${e?.message}`,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }, 60 * 60 * 1000);
         
         // Automatic profit-taking (every hour if enabled)
         const AUTO_PROFIT_ENABLED = process.env.AUTO_EXECUTE_PROFIT_TAKING === 'true';
@@ -2542,7 +2723,7 @@ async function startServer() {
       getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: nightly optimizer disabled');
     }
     
-    getLogger({ svc: 'api' }).info('API fully initialized and ready for requests');
+  getLogger({ svc: 'api' }).info(`API fully initialized and ready for requests (activePort=${ACTIVE_PORT})`);
 
     // ---- Scheduled Backtests & Auto-tuning ----
     if (!LIGHT_MODE) {
@@ -2936,7 +3117,7 @@ async function startServer() {
         }, Math.max(5, everyMin) * 60 * 1000);
       }
     }
-  });
+  
 
   // Graceful shutdown
   const shutdown = async (signal: string) => {

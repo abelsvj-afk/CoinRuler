@@ -148,7 +148,7 @@ body {
   background: rgba(255, 255, 255, 0.05);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 .glass-strong {
@@ -156,6 +156,30 @@ body {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+/* High-contrast helper classes for WCAG AA compliance */
+.text-contrast-high { 
+  color: #ffffff; 
+}
+.text-contrast-med { 
+  color: rgba(255,255,255,0.90); 
+}
+.text-contrast-low { 
+  color: rgba(255,255,255,0.75); 
+}
+.text-muted {
+  color: rgba(255,255,255,0.60);
+}
+.text-gold {
+  color: #FFB800;
+  text-shadow: 0 0 10px rgba(255, 184, 0, 0.3);
+}
+.bg-dark-surface {
+  background: rgba(0, 0, 0, 0.4);
+}
+.bg-card {
+  background: rgba(26, 59, 113, 0.4);
 }
 
 .glass-panel {

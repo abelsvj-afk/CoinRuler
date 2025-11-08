@@ -362,6 +362,23 @@ export async function executeAutomaticProfitTaking(db: Db): Promise<number> {
         };
 
         await db.collection('executions').insertOne(execDoc as any);
+        // Emit SSE event for Activity page and persist alert
+        try {
+          const { emitAlert } = await import('./events');
+          emitAlert({
+            type: 'profit_taking_auto',
+            severity: 'info',
+            message: `Profit taken: ${opp.asset} ${opp.recommendedSellQty.toFixed(4)} -> ~$${opp.estimatedNetUSD.toFixed(2)} USDC`,
+            data: { asset: opp.asset, qty: opp.recommendedSellQty, netUSD: opp.estimatedNetUSD },
+          });
+          await db.collection('alerts').insertOne({
+            type: 'profit_taking',
+            severity: 'info',
+            message: `Profit taken: ${opp.asset} ${opp.recommendedSellQty.toFixed(4)} -> ~$${opp.estimatedNetUSD.toFixed(2)} USDC`,
+            data: { asset: opp.asset, qty: opp.recommendedSellQty, netUSD: opp.estimatedNetUSD },
+            ts: new Date(),
+          });
+        } catch {}
         
         // Create trade record
         await db.collection('trades').insertOne({

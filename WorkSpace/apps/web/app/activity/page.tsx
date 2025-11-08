@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Activity, AlertTriangle, TrendingUp, Shield, Clock, CheckCircle, XCircle } from "lucide-react";
+import { Activity, AlertTriangle, TrendingUp, Shield, Clock, CheckCircle } from "lucide-react";
 import { getApiBase } from "../lib/api";
 import { useSSE, type SSEEvent } from "../lib/useSSE";
 import { BackBar } from "../components/BackBar";
@@ -23,6 +23,8 @@ export default function ActivityPage() {
   const [approvals, setApprovals] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>('all');
+  const [sseConnected, setSseConnected] = useState(false);
+  const [pollInterval, setPollInterval] = useState<NodeJS.Timeout | null>(null);
   const apiBase = getApiBase();
 
   // Load historical data
@@ -96,6 +98,18 @@ export default function ActivityPage() {
         };
         break;
 
+      case 'approval:updated':
+        newEvent = {
+          id: `appu-${Date.now()}`,
+          type: 'approval',
+          title: 'Approval Updated',
+          message: `Status: ${event.data?.status}`,
+          timestamp: new Date(),
+          severity: event.data?.status === 'executed' ? 'info' : 'warning',
+          data: event.data,
+        };
+        break;
+
       case 'portfolio:updated':
         // Portfolio updates are frequent; convert to activity event if significant
         if (event.data?.reason && event.data.reason !== 'auto') {
@@ -111,17 +125,54 @@ export default function ActivityPage() {
         }
         break;
 
-      case 'alert':
+      case 'trade:submitted':
+        newEvent = {
+          id: `ts-${Date.now()}`,
+            type: 'trade',
+          title: 'Trade Submitted',
+          message: `${event.data?.side?.toUpperCase()} ${event.data?.symbol} ${event.data?.amount}`,
+          timestamp: new Date(),
+          severity: 'info',
+          data: event.data,
+        };
+        break;
+
+      case 'trade:result':
+        newEvent = {
+          id: `tr-${Date.now()}`,
+          type: 'trade',
+          title: 'Trade Result',
+          message: `${event.data?.status || 'unknown'} ${event.data?.symbol || ''}`,
+          timestamp: new Date(),
+          severity: event.data?.ok ? 'info' : 'critical',
+          data: event.data,
+        };
+        break;
+
+      case 'alert': {
+        // Rich classification for alert subtypes
+        const rawType = event.data?.type as string | undefined;
+        let mappedType: ActivityEvent['type'] = 'alert';
+        if (rawType) {
+          if (rawType.startsWith('profit_taking')) mappedType = 'profit_taking';
+          else if (rawType === 'collateral_blocked' || rawType === 'collateral') mappedType = 'collateral';
+          else if (rawType === 'learning' || rawType === 'macro_feargreed' || rawType === 'optimization' || rawType === 'anomaly' || rawType === 'cadence' || rawType === 'backtest' || rawType === 'performance' || rawType === 'risk' || rawType === 'rule_action' || rawType === 'execution') {
+            // keep mappedType = 'alert' but retain subtype in title
+            mappedType = 'alert';
+          }
+        }
+        const subtype = rawType ? rawType.replace(/_/g,' ') : 'system';
         newEvent = {
           id: `alert-${Date.now()}`,
-          type: event.data?.type === 'collateral_blocked' ? 'collateral' : 'alert',
-          title: event.data?.message || 'System Alert',
-          message: event.data?.data ? JSON.stringify(event.data.data).slice(0, 100) : '',
+          type: mappedType as any,
+          title: event.data?.message || `System ${subtype}`,
+          message: event.data?.data ? JSON.stringify(event.data.data).slice(0, 160) : '',
           timestamp: new Date(),
           severity: event.data?.severity || 'info',
           data: event.data,
         };
         break;
+      }
     }
 
     if (newEvent) {
@@ -129,7 +180,83 @@ export default function ActivityPage() {
     }
   }, []);
 
-  useSSE(`${apiBase}/live`, handleSSEEvent);
+  const { connected } = useSSE(`${apiBase}/live`, handleSSEEvent);
+
+  // Fallback polling if SSE disconnects (with exponential backoff)
+  useEffect(() => {
+    setSseConnected(connected);
+
+    if (!connected) {
+      // Start polling with exponential backoff: 5s, 10s, 20s, max 60s
+      let attempts = 0;
+      const maxAttempts = 6;
+      
+      const poll = async () => {
+        try {
+          const [execRes, profitsRes] = await Promise.all([
+            fetch(`${apiBase}/executions/recent?limit=10`).catch(() => null),
+            fetch(`${apiBase}/profits/recent?limit=10`).catch(() => null),
+          ]);
+
+          if (execRes?.ok) {
+            const data = await execRes.json();
+            const newExecs = (data.items || []).filter((e: any) => 
+              !events.some(evt => evt.id === `exec-${e._id}`)
+            );
+            if (newExecs.length > 0) {
+              const newEvents: ActivityEvent[] = newExecs.map((e: any) => ({
+                id: `exec-${e._id}`,
+                type: 'execution',
+                title: `${e.side?.toUpperCase()} ${e.symbol}`,
+                message: `${e.side} ${e.amount} ${e.symbol}`,
+                timestamp: new Date(e.executedAt),
+                severity: 'info',
+                data: e,
+              }));
+              setEvents(prev => [...newEvents, ...prev].slice(0, 200));
+            }
+          }
+
+          if (profitsRes?.ok) {
+            const data = await profitsRes.json();
+            const latestProfit = data.items?.[0];
+            if (latestProfit && !events.some(e => e.id === `profit-${latestProfit._id}`)) {
+              setEvents(prev => [{
+                id: `profit-${latestProfit._id}`,
+                type: 'profit_taking' as ActivityEvent['type'],
+                title: 'Profit Taken',
+                message: `${latestProfit.symbol} → $${latestProfit.estimatedNetUSD?.toFixed(2)}`,
+                timestamp: new Date(latestProfit.executedAt),
+                severity: 'info' as ActivityEvent['severity'],
+                data: latestProfit,
+              }, ...prev].slice(0, 200));
+            }
+          }
+
+          attempts = 0; // reset on success
+        } catch (err) {
+          console.error('[Activity] Polling failed:', err);
+        }
+
+        // Schedule next poll with exponential backoff
+        if (!connected && attempts < maxAttempts) {
+          const delay = Math.min(60000, 5000 * Math.pow(2, attempts));
+          attempts++;
+          setTimeout(poll, delay);
+        }
+      };
+
+      // Start first poll after 5 seconds
+      const timeout = setTimeout(poll, 5000);
+      return () => clearTimeout(timeout);
+    } else {
+      // SSE connected, clear any polling
+      if (pollInterval) {
+        clearInterval(pollInterval);
+        setPollInterval(null);
+      }
+    }
+  }, [connected, apiBase, events, pollInterval]);
 
   // Filter events
   const filteredEvents = events
@@ -157,12 +284,12 @@ export default function ActivityPage() {
   const getSeverityColor = (severity?: string) => {
     switch (severity) {
       case 'critical':
-        return 'border-red-500 bg-red-500/10';
+        return 'border-red-500 bg-red-500/20 text-red-100';
       case 'warning':
-        return 'border-yellow-500 bg-yellow-500/10';
+        return 'border-yellow-500 bg-yellow-500/20 text-yellow-100';
       case 'info':
       default:
-        return 'border-[#FFB800] bg-[#FFB800]/10';
+        return 'border-[#FFB800] bg-[#FFB800]/20 text-white';
     }
   };
 
@@ -249,10 +376,10 @@ export default function ActivityPage() {
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 10 }}
-              className={`glass-strong rounded-xl p-4 border-l-4 ${getSeverityColor(event.severity)}`}
+              className={`glass-strong rounded-xl p-4 border-l-4 ${getSeverityColor(event.severity)} shadow-md`}
             >
               <div className="flex items-start gap-4">
-                <div className={`w-10 h-10 rounded-lg ${getSeverityColor(event.severity)} flex items-center justify-center flex-shrink-0`}>
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 border ${getSeverityColor(event.severity)}`}>
                   {getIcon(event.type)}
                 </div>
 

@@ -47,18 +47,23 @@ export function AIChatWidget() {
         const data = await response.json();
         return `📊 Monte Carlo Results:\n\nMean: $${data.monteCarlo.mean.toFixed(2)}\nMedian: $${data.monteCarlo.median.toFixed(2)}\nP5: $${data.monteCarlo.percentile_5.toFixed(2)}\nP95: $${data.monteCarlo.percentile_95.toFixed(2)}\n\nConfidence: ${(data.confidence * 100).toFixed(0)}%\nSamples: ${data.summary.samples}`;
       }
-      
-            return `BTC Holdings:\n\nTotal: ${(data.collateral?.btcTotal ?? data.balances.BTC ?? 0).toFixed(8)} BTC\nFree: ${(data.btcFree ?? data.collateral?.btcFree ?? 0).toFixed(8)} BTC\nLocked: ${(data.collateral?.btcLocked ?? 0).toFixed(8)} BTC\nPrice: $${(data.prices.BTC ?? 0).toFixed(2)}\nValue: $${(((data.collateral?.btcTotal ?? data.balances.BTC) || 0) * (data.prices.BTC || 0)).toFixed(2)}\nNote: Locked BTC is collateral and will not be sold until the loan is repaid.`;
+
       if (lower.includes('balance') || lower.includes('holdings') || lower.includes('portfolio')) {
         const response = await fetch('/api/ruler/portfolio/current');
         const data = await response.json();
-        
+
+        if (lower.includes('btc')) {
+          const total = (data.collateral?.btcTotal ?? data.balances.BTC ?? 0) as number;
+          const free = (data.btcFree ?? data.collateral?.btcFree ?? Math.max(0, total - (data.collateral?.btcLocked || 0))) as number;
+          const locked = (data.collateral?.btcLocked ?? Math.max(0, total - free)) as number;
+          const price = (data.prices.BTC ?? 0) as number;
+          const value = total * price;
+          const note = locked > 0 ? 'Note: Part of your BTC is pledged as loan collateral and remains market-exposed.' : 'BTC is fully free and tradable.';
+          return `BTC Holdings:\n\nTotal: ${total.toFixed(8)} BTC\nFree: ${free.toFixed(8)} BTC\nLocked: ${locked.toFixed(8)} BTC\nPrice: $${price.toFixed(2)}\nValue: $${value.toFixed(2)}\n${note}`;
+        }
+
         if (lower.includes('xrp')) {
           return `XRP Holdings:\n\nTotal: ${data.balances.XRP?.toFixed(2) || 0} XRP\nBaseline: ${data.baselines.XRP?.baseline || 0} XRP\nAbove baseline: ${data.xrpAboveBaseline?.toFixed(2) || 0} XRP\nPrice: $${data.prices.XRP?.toFixed(4) || 0}\nValue: $${((data.balances.XRP || 0) * (data.prices.XRP || 0)).toFixed(2)}`;
-        }
-        
-        if (lower.includes('btc')) {
-          return `BTC Holdings:\n\nTotal: ${data.balances.BTC?.toFixed(8) || 0} BTC\nFree: ${data.btcFree?.toFixed(8) || 0} BTC\nLocked: ${data.collateral?.btcLocked?.toFixed(8) || 0} BTC\nPrice: $${data.prices.BTC?.toFixed(2) || 0}\nValue: $${((data.balances.BTC || 0) * (data.prices.BTC || 0)).toFixed(2)}`;
         }
         
         return `Portfolio Value: $${data.totalValueUSD?.toFixed(2) || 0}\n\nTop Holdings:\n${Object.entries(data.balances).slice(0, 5).map(([coin, amt]: [string, any]) => `${coin}: ${amt.toFixed(4)} ($${((amt || 0) * (data.prices[coin] || 0)).toFixed(2)})`).join('\n')}`;
