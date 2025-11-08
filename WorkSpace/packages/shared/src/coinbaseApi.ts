@@ -164,6 +164,69 @@ export class CoinbaseApiClient {
   }
 
   /**
+   * Get current API key permissions for Advanced Trade
+   */
+  async getKeyPermissions(): Promise<any> {
+    return await this.request('GET', '/api/v3/brokerage/key_permissions');
+  }
+
+  /**
+   * Get best bid/ask for one or more products (e.g., BTC-USD)
+   */
+  async getBestBidAsk(productIds: string[]): Promise<any> {
+    const ids = (productIds || []).filter(Boolean);
+    if (!ids.length) throw new Error('productIds required');
+    const qs = new URLSearchParams({ product_ids: ids.join(',') });
+    const path = `/api/v3/brokerage/best_bid_ask?${qs.toString()}`;
+    return await this.request('GET', path);
+  }
+
+  /**
+   * Get historical fills (trades) with optional filters
+   */
+  async getFills(params: { product_id?: string; order_id?: string; limit?: number; cursor?: string } = {}): Promise<any> {
+    const qs = new URLSearchParams();
+    if (params.product_id) qs.set('product_id', params.product_id);
+    if (params.order_id) qs.set('order_id', params.order_id);
+    if (params.limit) qs.set('limit', String(params.limit));
+    if (params.cursor) qs.set('cursor', params.cursor);
+    const path = '/api/v3/brokerage/orders/historical/fills' + (qs.toString() ? `?${qs.toString()}` : '');
+    return await this.request('GET', path);
+  }
+
+  /**
+   * Get candles for a product within a time range and granularity.
+   * granularity example: ONE_MINUTE | FIVE_MINUTE | FIFTEEN_MINUTE | ONE_HOUR | SIX_HOUR | ONE_DAY
+   * If start/end not provided, fetch recent window using lastMinutes.
+   */
+  async getCandles(params: { product_id: string; granularity: string; start?: string; end?: string; lastMinutes?: number }): Promise<any> {
+    const { product_id, granularity } = params;
+    if (!product_id) throw new Error('product_id required');
+    if (!granularity) throw new Error('granularity required');
+    let start = params.start;
+    let end = params.end;
+    if (!start || !end) {
+      const mins = Math.max(1, Math.min(24 * 60, params.lastMinutes || 120));
+      const now = new Date();
+      const from = new Date(now.getTime() - mins * 60 * 1000);
+      start = from.toISOString();
+      end = now.toISOString();
+    }
+    const qs = new URLSearchParams({ start: start!, end: end!, granularity });
+    const path = `/api/v3/brokerage/market/products/${encodeURIComponent(product_id)}/candles?${qs.toString()}`;
+    return await this.request('GET', path);
+  }
+
+  /**
+   * Preview an order request. Supports simple market previews.
+   * If a raw body is supplied, it will be passed through as-is.
+   */
+  async previewOrder(body: any): Promise<any> {
+    if (!body || typeof body !== 'object') throw new Error('order body required');
+    return await this.request('POST', '/api/v3/brokerage/orders/preview', body);
+  }
+
+  /**
    * Get balance for specific currency
    */
   async getBalance(currency: string): Promise<number> {

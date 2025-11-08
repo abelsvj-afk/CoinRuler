@@ -315,6 +315,27 @@ app.get('/metrics/cors', (_req, res) => {
 });
 
 // Coinbase credential + connectivity diagnostics (safe; never returns secrets)
+// Heuristic classifier for credential type to improve guidance
+function classifyCoinbaseSecret(key?: string, secret?: string): { type: 'none' | 'hmac' | 'cdp-pem' | 'cdp-base64' | 'unknown'; hints: string[] } {
+  const hints: string[] = [];
+  if (!key || !secret) return { type: 'none', hints };
+  const s = secret.trim();
+  if (/-----BEGIN (EC|PRIVATE) KEY-----/i.test(s) || s.includes('BEGIN ') || s.includes('\n') && s.length > 200) {
+    hints.push('Secret looks like PEM (multi-line)');
+    return { type: 'cdp-pem', hints };
+  }
+  const likelyBase64 = /^[A-Za-z0-9+/=]{32,}$/.test(s);
+  if (likelyBase64 && s.includes('=')) {
+    hints.push('Secret appears base64-like');
+    return { type: 'cdp-base64', hints };
+  }
+  // HMAC secrets are typically shorter random strings (no line breaks, no PEM headers)
+  if (!s.includes('\n') && s.length >= 16 && s.length <= 128) {
+    return { type: 'hmac', hints };
+  }
+  return { type: 'unknown', hints };
+}
+
 app.get('/coinbase/status', async (_req, res) => {
   const details: any = {
     hasCredentials: hasCoinbaseCredentials(),
@@ -326,16 +347,26 @@ app.get('/coinbase/status', async (_req, res) => {
     return res.json(details);
   }
   try {
+    const kind = classifyCoinbaseSecret(process.env.COINBASE_API_KEY, process.env.COINBASE_API_SECRET);
+    details.credentialType = kind.type;
+    details.credentialHints = kind.hints;
     const client = getCoinbaseApiClient();
     const ok = await client.testConnection();
     details.status = ok ? 'connected' : 'failed';
     if (!ok) {
-      // Heuristic: If secret looks like base64 (likely CDP) but brokerage fails 401
-      const secret = process.env.COINBASE_API_SECRET || '';
-      const isLikelyBase64 = /^[A-Za-z0-9+/=]{32,}$/.test(secret) && secret.includes('=');
-      details.advice = isLikelyBase64
-        ? 'Brokerage Advanced Trade endpoints returning 401. Provided secret appears to be a CDP key. Generate a Coinbase Advanced Trade API key/secret (HMAC) in exchange profile and set COINBASE_API_KEY/COINBASE_API_SECRET. CDP wallets will not populate brokerage /api/v3/brokerage/accounts.'
-        : 'Authentication failed. Verify the API key has read permissions for accounts and trading. Regenerate if unsure.';
+      switch (kind.type) {
+        case 'cdp-pem':
+          details.advice = 'Your secret looks like a PEM private key (CDP/Onchain). Advanced Trade requires an HMAC secret (single-line random string). Create an Advanced Trade API key in your Coinbase profile and set COINBASE_API_KEY/COINBASE_API_SECRET.';
+          break;
+        case 'cdp-base64':
+          details.advice = 'Your secret looks like a base64 CDP key. Advanced Trade requires an HMAC secret. Create an Advanced Trade key (not CDP) and set COINBASE_API_KEY/COINBASE_API_SECRET.';
+          break;
+        case 'hmac':
+          details.advice = 'Authentication failed. Ensure this HMAC key has read (and later trade) permissions for Advanced Trade. Try regenerating the key and updating env vars.';
+          break;
+        default:
+          details.advice = 'Authentication failed. Likely wrong key type. Use Advanced Trade API keys (HMAC), not CDP/PEM.';
+      }
     }
     // Try a lightweight balances fetch (sample only)
     try {
@@ -428,6 +459,86 @@ app.get('/coinbase/debug/signature', ownerAuth, async (req, res) => {
   }
 });
 
+// List brokerage accounts (owner; paginated)
+app.get('/coinbase/accounts', ownerAuth, async (req, res) => {
+  try {
+    if (!hasCoinbaseCredentials()) return res.status(400).json({ error: 'Coinbase brokerage credentials required' });
+    const limit = Math.max(1, Math.min(250, Number((req.query.limit as string) || '49')));
+    const cursor = (req.query.cursor as string) || undefined;
+    const client = getCoinbaseApiClient();
+    // @ts-ignore getAccountsPage is available on shared client
+    const page = await (client as any).getAccountsPage?.({ limit, cursor });
+    res.json({ ok: true, ...page });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Brokerage key permissions (owner)
+app.get('/coinbase/key-permissions', ownerAuth, async (_req, res) => {
+  try {
+    if (!hasCoinbaseCredentials()) return res.status(400).json({ error: 'No credentials configured' });
+    const client = getCoinbaseApiClient();
+    const perms = await (client as any).getKeyPermissions?.();
+    res.json({ ok: true, permissions: perms });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Best bid/ask for product IDs (public if credentials present)
+app.get('/coinbase/market/best_bid_ask', async (req, res) => {
+  try {
+    if (!hasCoinbaseCredentials()) return res.status(400).json({ error: 'Coinbase brokerage credentials required' });
+    const ids = ((req.query.product_ids as string) || 'BTC-USD').split(',').map(s => s.trim()).filter(Boolean);
+    const client = getCoinbaseApiClient();
+    const data = await (client as any).getBestBidAsk?.(ids);
+    res.json({ ok: true, data });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Historical fills (owner)
+app.get('/coinbase/fills', ownerAuth, async (req, res) => {
+  try {
+    if (!hasCoinbaseCredentials()) return res.status(400).json({ error: 'Coinbase brokerage credentials required' });
+    const { product_id, order_id, limit, cursor } = req.query as any;
+    const client = getCoinbaseApiClient();
+    const data = await (client as any).getFills?.({ product_id, order_id, limit: limit ? Number(limit) : undefined, cursor });
+    res.json({ ok: true, data });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Candles (public if credentials present)
+app.get('/coinbase/candles', async (req, res) => {
+  try {
+    if (!hasCoinbaseCredentials()) return res.status(400).json({ error: 'Coinbase brokerage credentials required' });
+    const { product_id, granularity, start, end, lastMinutes } = req.query as any;
+    if (!product_id) return res.status(400).json({ error: 'product_id required' });
+    if (!granularity) return res.status(400).json({ error: 'granularity required' });
+    const client = getCoinbaseApiClient();
+    const data = await (client as any).getCandles?.({ product_id, granularity, start, end, lastMinutes: lastMinutes ? Number(lastMinutes) : undefined });
+    res.json({ ok: true, data });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// Order preview (owner)
+app.post('/coinbase/orders/preview', ownerAuth, async (req, res) => {
+  try {
+    if (!hasCoinbaseCredentials()) return res.status(400).json({ error: 'Coinbase brokerage credentials required' });
+    const body = req.body || {};
+    const client = getCoinbaseApiClient();
+    const preview = await (client as any).previewOrder?.(body);
+    res.json({ ok: true, preview });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
 // Version endpoint to verify deployed build hash/time
 app.get('/version', (_req, res) => {
   res.json({
