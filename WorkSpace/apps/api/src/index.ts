@@ -1231,6 +1231,8 @@ async function startServer() {
   let riskInterval: NodeJS.Timeout | null = null;
   let riskBreachSince: Date | null = null;
   let recoveryStart: Date | null = null;
+  let volatilityInterval: NodeJS.Timeout | null = null;
+  let snapshotIntervalMinutesCurrent = Number(process.env.SNAPSHOT_INTERVAL_MINUTES || '60');
 
   // Helper: create a live snapshot from Coinbase balances (internal reuse)
   async function createLiveSnapshot(reason: string) {
@@ -1561,15 +1563,77 @@ async function startServer() {
         } else {
           getLogger({ svc: 'api' }).info(`Snapshot count at startup: ${existingCount}`);
         }
-        // Periodic snapshots (default every 60 minutes) configurable via SNAPSHOT_INTERVAL_MINUTES
-        const intervalMinutes = Number(process.env.SNAPSHOT_INTERVAL_MINUTES || '60');
-        if (intervalMinutes > 0 && hasCoinbaseCredentials()) {
-          snapshotInterval = setInterval(() => {
-            createLiveSnapshot('scheduled-interval').catch(() => {});
-          }, intervalMinutes * 60 * 1000);
-          getLogger({ svc: 'api' }).info(`Scheduled automatic snapshots every ${intervalMinutes}m`);
-        } else {
-          getLogger({ svc: 'api' }).info('Automatic snapshot scheduler disabled (interval <= 0 or credentials missing)');
+        // Helper to (re)schedule snapshot interval on demand
+        const scheduleSnapshot = (minutes: number) => {
+          try { if (snapshotInterval) clearInterval(snapshotInterval); } catch {}
+          if (minutes > 0) {
+            snapshotInterval = setInterval(() => {
+              createLiveSnapshot('scheduled-interval').catch(() => {});
+            }, minutes * 60 * 1000);
+            snapshotIntervalMinutesCurrent = minutes;
+            getLogger({ svc: 'api' }).info(`Scheduled automatic snapshots every ${minutes}m`);
+          } else {
+            snapshotInterval = null;
+            getLogger({ svc: 'api' }).info('Automatic snapshot scheduler disabled (interval <= 0)');
+          }
+        };
+        // Initial schedule from env (runs regardless of credentials; createLiveSnapshot is guarded internally)
+        scheduleSnapshot(snapshotIntervalMinutesCurrent);
+
+        // Volatility-aware cadence adjuster (optional, defaults provided)
+        const volEnabled = (process.env.VOL_DYNAMIC_SNAPSHOT_ENABLED || 'true') === 'true';
+        if (volEnabled) {
+          const checkEveryMin = Number(process.env.VOL_CHECK_MINUTES || '5');
+          const highStdPct = Number(process.env.VOL_HIGH_STDDEV_PCT || '3'); // e.g., 3% std dev over 24h returns
+          const lowStdPct  = Number(process.env.VOL_LOW_STDDEV_PCT  || '1'); // e.g., below 1% -> slow cadence
+          const fastMin    = Number(process.env.VOL_SNAPSHOT_FAST_MINUTES || '15');
+          const slowMin    = Number(process.env.VOL_SNAPSHOT_SLOW_MINUTES || String(snapshotIntervalMinutesCurrent || 60));
+          getLogger({ svc: 'api' }).info(`Volatility cadence enabled (check=${checkEveryMin}m, fast=${fastMin}m, slow=${slowMin}m, highStd=${highStdPct}%, lowStd=${lowStdPct}%)`);
+          volatilityInterval = setInterval(async () => {
+            try {
+              if (!db) return;
+              const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+              // Get last 24h snapshots with prices, sorted ascending
+              const snaps = await db.collection('snapshots')
+                .find({ timestamp: { $gte: since } })
+                .project({ _prices: 1, timestamp: 1 })
+                .sort({ timestamp: 1 })
+                .limit(500)
+                .toArray();
+              if (snaps.length < 6) return; // not enough points
+              // Use BTC price as a proxy; fallback to XRP if missing
+              const prices: number[] = [];
+              for (const s of snaps) {
+                const p = (s as any)._prices || {};
+                const val = typeof p.BTC === 'number' ? p.BTC : (typeof p.XRP === 'number' ? p.XRP : undefined);
+                if (typeof val === 'number' && isFinite(val) && val > 0) prices.push(val);
+              }
+              if (prices.length < 6) return;
+              const returnsPct: number[] = [];
+              for (let i = 1; i < prices.length; i++) {
+                const r = (prices[i] - prices[i-1]) / prices[i-1] * 100;
+                if (isFinite(r)) returnsPct.push(r);
+              }
+              if (returnsPct.length < 5) return;
+              const mean = returnsPct.reduce((a,b)=>a+b,0) / returnsPct.length;
+              const variance = returnsPct.reduce((a,b)=>a + Math.pow(b-mean,2), 0) / (returnsPct.length - 1);
+              const stdPct = Math.sqrt(variance);
+              // Decide target interval with hysteresis-like bands
+              let target = snapshotIntervalMinutesCurrent;
+              if (stdPct >= highStdPct) target = fastMin;
+              else if (stdPct <= lowStdPct) target = slowMin;
+              if (target !== snapshotIntervalMinutesCurrent) {
+                scheduleSnapshot(target);
+                liveEvents.emit('alert', {
+                  type: 'cadence',
+                  severity: 'info',
+                  message: `Snapshot cadence adjusted to ${target}m (std=${stdPct.toFixed(2)}%)`,
+                  data: { stdPct, target },
+                  timestamp: new Date().toISOString(),
+                });
+              }
+            } catch {}
+          }, Math.max(1, checkEveryMin) * 60 * 1000);
         }
       } catch (e: any) {
         getLogger({ svc: 'api' }).warn({ err: e?.message }, 'Failed to initialize automatic snapshot system');
@@ -1667,6 +1731,7 @@ async function startServer() {
     try { if (nightlyTimeout) clearTimeout(nightlyTimeout); } catch {}
     try { clearInterval(snapshotInterval as any); } catch {}
     try { clearInterval(riskInterval as any); } catch {}
+    try { clearInterval(volatilityInterval as any); } catch {}
     process.exit(0);
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
