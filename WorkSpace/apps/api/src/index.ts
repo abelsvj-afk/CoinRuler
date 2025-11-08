@@ -252,7 +252,42 @@ app.get('/env', (_req, res) => {
     coinbaseKeyLength: process.env.COINBASE_API_KEY?.length || 0,
     autoExecuteEnabled: process.env.AUTO_EXECUTE_ENABLED === 'true',
     snapshotIntervalMinutes: Number(process.env.SNAPSHOT_INTERVAL_MINUTES || '60'),
+    rotationSchedulerEnabled: (process.env.ROTATION_SCHEDULER_ENABLED || 'true') === 'true',
+    backtestSchedulerEnabled: (process.env.BACKTEST_SCHED_ENABLED || 'true') === 'true',
+    backtestEveryHours: Number(process.env.BACKTEST_SCHED_HOURS || '24'),
+    backtestLookbackDays: Number(process.env.BACKTEST_LOOKBACK_DAYS || '30'),
+    backtestAutotuneEnabled: (process.env.BACKTEST_AUTOTUNE_ENABLED || 'true') === 'true',
   });
+});
+
+// Coinbase credential + connectivity diagnostics (safe; never returns secrets)
+app.get('/coinbase/status', async (_req, res) => {
+  const details: any = {
+    hasCredentials: hasCoinbaseCredentials(),
+    keyLength: process.env.COINBASE_API_KEY?.length || 0,
+    status: 'disabled',
+  };
+  if (!details.hasCredentials) {
+    return res.json(details);
+  }
+  try {
+    const client = getCoinbaseApiClient();
+    const ok = await client.testConnection();
+    details.status = ok ? 'connected' : 'failed';
+    // Try a lightweight balances fetch (sample only)
+    try {
+      const balances = await client.getAllBalances();
+      const sampleEntries = Object.entries(balances).slice(0, 5);
+      details.balancesSample = Object.fromEntries(sampleEntries);
+    } catch (e: any) {
+      details.balanceError = e?.message || String(e);
+    }
+    return res.json(details);
+  } catch (err: any) {
+    details.status = 'error';
+    details.error = err?.message || String(err);
+    return res.json(details);
+  }
 });
 
 // Version endpoint to verify deployed build hash/time
@@ -758,6 +793,67 @@ app.get('/report/daily', async (_req, res) => {
   }
 });
 
+// Recent backtests (inspection)
+app.get('/backtests/recent', async (req, res) => {
+  try {
+    const limit = Math.min(100, Math.max(1, Number((req.query.limit as string) || '25')));
+    const items = await db?.collection('backtests')
+      .find({})
+      .sort({ ranAt: -1 })
+      .limit(limit)
+      .toArray() || [];
+    res.json({ count: items.length, items });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Backtests aggregate summary per rule
+app.get('/backtests/summary', async (req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const windowDays = Math.max(1, Number((req.query.windowDays as string) || '90'));
+    const maxRules = Math.max(1, Math.min(200, Number((req.query.maxRules as string) || '50')));
+    const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+    const docs = await db.collection('backtests')
+      .find({ ranAt: { $gte: since } })
+      .sort({ ranAt: -1 })
+      .limit(5000)
+      .toArray();
+    const byRule: Record<string, any> = {};
+    for (const d of docs) {
+      const id = (d as any).ruleId || 'unknown';
+      const name = (d as any).ruleName || 'rule';
+      const s = (d as any).summary || {};
+      const entry = byRule[id] || { ruleId: id, ruleName: name, runs: 0, totalReturnPct: 0, sharpe: 0, maxDrawdown: 0, trades: 0, lastRanAt: null };
+      entry.runs += 1;
+      if (typeof s.totalReturnPct === 'number') entry.totalReturnPct += s.totalReturnPct;
+      if (typeof s.sharpe === 'number') entry.sharpe += s.sharpe;
+      if (typeof s.maxDrawdown === 'number') entry.maxDrawdown += s.maxDrawdown;
+      entry.trades += s.trades || 0;
+      const r = (d as any).ranAt ? new Date((d as any).ranAt) : null;
+      if (r && (!entry.lastRanAt || r > entry.lastRanAt)) entry.lastRanAt = r;
+      byRule[id] = entry;
+    }
+    let rows = Object.values(byRule).map((e: any) => ({
+      ruleId: e.ruleId,
+      ruleName: e.ruleName,
+      runs: e.runs,
+      avgReturnPct: e.runs ? e.totalReturnPct / e.runs : 0,
+      avgSharpe: e.runs ? e.sharpe / e.runs : 0,
+      avgMaxDrawdown: e.runs ? e.maxDrawdown / e.runs : 0,
+      totalTrades: e.trades,
+      lastRanAt: e.lastRanAt,
+    }));
+    // Sort by avgReturnPct desc then avgSharpe desc
+    rows.sort((a: any, b: any) => (b.avgReturnPct - a.avgReturnPct) || (b.avgSharpe - a.avgSharpe));
+    rows = rows.slice(0, maxRules);
+    res.json({ windowDays, count: rows.length, items: rows });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Objectives (owner portfolio and policy) endpoints
 app.get('/objectives', async (_req, res) => {
   if (!db) return res.status(503).json({ error: 'Database not connected' });
@@ -933,6 +1029,17 @@ app.get('/rotation/status', async (_req, res) => {
   try {
     const status = await getRotationStatus(db);
     res.json(status);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List all rotation policies
+app.get('/rotation/policies', async (_req, res) => {
+  try {
+    if (!db) return res.status(503).json({ error: 'Database not connected' });
+    const docs = await db.collection('rotation_policies').find({}).sort({ service: 1 }).toArray();
+    res.json({ count: docs.length, policies: docs });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -1239,6 +1346,7 @@ async function startServer() {
   let mongoReconnectBackoffMs = 15_000; // starts 15s, exponential backoff
   const mongoReconnectMaxMs = 15 * 60 * 1000; // cap at 15 minutes
   let mongoReconnecting = false;
+  let backtestInterval: NodeJS.Timeout | null = null;
 
   // Helper: create a live snapshot from Coinbase balances (internal reuse)
   async function createLiveSnapshot(reason: string) {
@@ -1557,6 +1665,102 @@ async function startServer() {
     }
     
     getLogger({ svc: 'api' }).info('API fully initialized and ready for requests');
+
+    // ---- Scheduled Backtests & Auto-tuning ----
+    if (!LIGHT_MODE) {
+      const backtestEnabled = (process.env.BACKTEST_SCHED_ENABLED || 'true') === 'true';
+      if (backtestEnabled) {
+        const everyHours = Math.max(1, Number(process.env.BACKTEST_SCHED_HOURS || '24'));
+        const lookbackDays = Math.max(7, Number(process.env.BACKTEST_LOOKBACK_DAYS || '30'));
+        const maxRules = Math.max(1, Number(process.env.BACKTEST_MAX_RULES || '20'));
+        const autotune = (process.env.BACKTEST_AUTOTUNE_ENABLED || 'true') === 'true';
+        getLogger({ svc: 'api' }).info(`Backtest scheduler enabled (every ${everyHours}h, lookback=${lookbackDays}d, maxRules=${maxRules}, autotune=${autotune})`);
+        backtestInterval = setInterval(async () => {
+          if (!db) return;
+          try {
+            const log = getLogger({ svc: 'api' });
+            log.info('Running scheduled backtests...');
+            const rules = await db.collection('rules').find({ enabled: true }).limit(maxRules).toArray();
+            if (!rules.length) return;
+            const latest = await db.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
+            const prices = (latest as any)?._prices || { BTC: 69000, USDC: 1 };
+            const startDate = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+            const endDate = new Date();
+            let tested = 0;
+            for (const rule of rules) {
+              try {
+                const config: BacktestConfig = {
+                  startDate,
+                  endDate,
+                  initialBalance: { BTC: 1, USDC: 50000 },
+                  initialPrices: { BTC: prices.BTC || 69000, USDC: prices.USDC || 1 },
+                };
+                const result = await backtestRule(db, rule as any, config);
+                await db.collection('backtests').insertOne({
+                  ruleId: (rule as any)._id?.toString?.() || 'unknown',
+                  ruleName: (rule as any).name || 'rule',
+                  ranAt: new Date(),
+                  lookbackDays,
+                  config,
+                  summary: {
+                    totalReturnPct: (result as any)?.totalReturnPct,
+                    sharpe: (result as any)?.sharpe,
+                    maxDrawdown: (result as any)?.maxDrawdown,
+                    trades: (result as any)?.trades?.length || 0,
+                  },
+                });
+                tested += 1;
+              } catch (e: any) {
+                log.warn({ err: e?.message }, `Backtest failed for rule ${(rule as any).name || (rule as any)._id}`);
+              }
+            }
+            liveEvents.emit('alert', {
+              type: 'backtest',
+              severity: 'info',
+              message: `Scheduled backtests completed for ${tested}/${rules.length} rules`,
+              data: { tested, total: rules.length, lookbackDays },
+              timestamp: new Date().toISOString(),
+            });
+            if (autotune) {
+              try {
+                const results = await runOptimizationCycle(db, {});
+                if (results.length > 0) {
+                  liveEvents.emit('alert', {
+                    type: 'optimization',
+                    severity: 'medium',
+                    message: `Auto-tuning: ${results.length} candidate improvements found`,
+                    data: { top: results.slice(0, 3) },
+                    timestamp: new Date().toISOString(),
+                  });
+                  for (const result of results.slice(0, 3)) {
+                    const approval: Approval = {
+                      type: 'stake-suggestion',
+                      coin: 'RULE_UPDATE',
+                      amount: 0,
+                      title: `Auto-Tune: ${result.candidateRule.name}`,
+                      summary: result.reasoning,
+                      status: 'pending',
+                      createdAt: new Date(),
+                      metadata: { optimization: result, source: 'scheduled-backtest' },
+                    };
+                    await db.collection('approvals').insertOne(approval as any);
+                    liveEvents.emit('approval:created', approval);
+                  }
+                }
+              } catch (e: any) {
+                log.warn({ err: e?.message }, 'Auto-tuning step failed');
+              }
+            }
+          } catch (e: any) {
+            getLogger({ svc: 'api' }).warn({ err: e?.message }, 'Scheduled backtests failed');
+          }
+        }, everyHours * 60 * 60 * 1000);
+      } else {
+        getLogger({ svc: 'api' }).info('Backtest scheduler disabled by env');
+      }
+    } else {
+      getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: backtest scheduler disabled');
+    }
 
     // ---- Automatic Snapshot System ----
     // Skip in LIGHT_MODE to minimize background work

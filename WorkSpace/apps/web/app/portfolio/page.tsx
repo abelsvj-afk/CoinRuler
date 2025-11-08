@@ -36,9 +36,23 @@ export default function PortfolioPage() {
 
   async function loadPortfolio() {
     try {
-      const res = await fetch(`${api}/portfolio`);
-      const data = await res.json();
-      setPortfolio(data);
+      const res = await fetch(`${api}/portfolio/current`, { cache: 'no-store' });
+      const d = await res.json();
+      const baselines: Record<string, number> = {};
+      if (d?.baselines) {
+        for (const [k, v] of Object.entries(d.baselines)) {
+          const vv: any = v;
+          if (vv && typeof vv.baseline === 'number') baselines[k] = vv.baseline;
+        }
+      }
+      const mapped: PortfolioData = {
+        timestamp: d?.updatedAt || new Date().toISOString(),
+        balances: d?.balances || {},
+        baselines,
+        prices: d?.prices || {},
+        totalValue: d?.totalValueUSD,
+      };
+      setPortfolio(mapped);
     } catch (err) {
       console.error('[Portfolio] Failed to load:', err);
     } finally {
@@ -65,12 +79,29 @@ export default function PortfolioPage() {
     return <main className="max-w-5xl mx-auto p-6">Loading portfolio...</main>;
   }
 
-  if (!portfolio || !portfolio.balances) {
+  if (!portfolio || !portfolio.balances || Object.keys(portfolio.balances).length === 0) {
     return (
       <main className="max-w-5xl mx-auto p-6">
         <h1 className="text-2xl font-semibold mb-4">Portfolio</h1>
-        <div className="border rounded p-8 text-center text-gray-500">
-          No portfolio data available. Take a snapshot first.
+        <div className="border rounded p-8 text-center text-gray-500 space-y-3">
+          <div>No portfolio data available. Take a snapshot first.</div>
+          <button
+            className="px-4 py-2 rounded bg-[#FFB800] text-black font-semibold hover:opacity-90"
+            onClick={async () => {
+              try {
+                const res = await fetch(`${api}/portfolio/snapshot/force`, { method: 'POST' });
+                if (res.ok) {
+                  showToast('success', 'Snapshot Created', 'Pulled live balances from Coinbase');
+                  loadPortfolio();
+                } else {
+                  const err = await res.json().catch(() => ({}));
+                  showToast('error', 'Snapshot Failed', err?.error || 'Unable to create snapshot');
+                }
+              } catch (e: any) {
+                showToast('error', 'Snapshot Failed', e?.message || 'Network error');
+              }
+            }}
+          >Create Live Snapshot</button>
         </div>
       </main>
     );

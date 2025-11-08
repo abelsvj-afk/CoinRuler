@@ -328,7 +328,25 @@ export default function HomePage() {
               <div className="text-center py-8">
                 <Shield className="w-12 h-12 text-white/20 mx-auto mb-3" />
                 <p className="text-white/40 mb-2">No portfolio data available</p>
-                <p className="text-[10px] text-white/30">Set Coinbase credentials on Railway or create a snapshot</p>
+                <p className="text-[10px] text-white/30 mb-3">Set Coinbase credentials on Railway or create a snapshot</p>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={async () => {
+                    try {
+                      const res = await fetch(`${apiBase}/portfolio/snapshot/force`, { method: 'POST' });
+                      if (res.ok) {
+                        const info = await res.json().catch(() => ({}));
+                        console.log('Snapshot created', info);
+                        window.location.reload();
+                      } else {
+                        console.warn('Snapshot failed', await res.text());
+                      }
+                    } catch (e) {
+                      console.warn('Snapshot error', e);
+                    }
+                  }}
+                >Create Live Snapshot</Button>
               </div>
             )}
           </div>
