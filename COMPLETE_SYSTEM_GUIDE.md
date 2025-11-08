@@ -402,9 +402,10 @@ DISCORD_BOT_TOKEN=your_token
 DISCORD_CLIENT_ID=your_client_id
 OWNER_ID=your_discord_user_id
 
-# Coinbase
-COINBASE_API_KEY=organizations/xxx/apiKeys/xxx
-COINBASE_API_SECRET=-----BEGIN EC PRIVATE KEY-----...
+# Coinbase (Advanced Trade)
+# Use HMAC key + secret from https://www.coinbase.com (Settings → API). Do NOT use PEM/Ed25519/ECDSA keys from CDP/cloud.
+COINBASE_API_KEY=your_hmac_api_key
+COINBASE_API_SECRET=your_hmac_api_secret
 
 # OpenAI
 OPENAI_API_KEY=sk-...
