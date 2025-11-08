@@ -11,6 +11,14 @@ export interface TradeRequest {
   mode?: PriceMode;    // default: market
   limitPrice?: number; // required for limit
   reason?: string;     // optional audit note
+  risk?: {
+    tradesLastHour?: number;
+    dailyLoss?: number;         // negative numbers represent losses
+    killSwitch?: boolean;       // true blocks execution
+    ltv?: number | null;        // worst-case collateral LTV if applicable
+    maxTradesHour?: number;     // threshold
+    dailyLossLimit?: number;    // e.g., -1000
+  };
 }
 
 export interface TradeResult {
@@ -34,9 +42,34 @@ export async function executeTrade(req: TradeRequest): Promise<TradeResult> {
   const mode = req.mode || 'market';
   const dryRun = (process.env.DRY_RUN || 'true') === 'true';
 
-  if (isKillSwitchEnabled()) {
+  // EARLY risk gating (explicit logs to aid debugging)
+  if (req.risk) {
+    log.debug({ risk: req.risk }, 'Risk context received');
+    const maxTradesHour = typeof req.risk.maxTradesHour === 'number'
+      ? req.risk.maxTradesHour
+      : Number(process.env.AUTO_EXECUTE_RISK_MAX_TRADES_HOUR || '0');
+    if (maxTradesHour > 0 && typeof req.risk.tradesLastHour === 'number') {
+      if (req.risk.tradesLastHour >= maxTradesHour) {
+        log.warn({ tradesLastHour: req.risk.tradesLastHour, maxTradesHour }, 'Risk gate: velocity');
+        return { ok: false, error: 'RISK_TRADE_VELOCITY' };
+      }
+    }
+    const dailyLossLimit = typeof req.risk.dailyLossLimit === 'number'
+      ? req.risk.dailyLossLimit
+      : Number(process.env.AUTO_EXECUTE_DAILY_LOSS_LIMIT || 'NaN');
+    if (!Number.isNaN(dailyLossLimit) && typeof req.risk.dailyLoss === 'number') {
+      if (req.risk.dailyLoss <= dailyLossLimit) {
+        log.warn({ dailyLoss: req.risk.dailyLoss, dailyLossLimit }, 'Risk gate: daily loss');
+        return { ok: false, error: 'RISK_DAILY_LOSS_LIMIT' };
+      }
+    }
+  }
+
+  // Risk pre-checks (API should pass risk in; shared adds belt-and-suspenders defaults)
+  if (req.risk?.killSwitch || isKillSwitchEnabled()) {
     return { ok: false, error: 'KILL_SWITCH_ENABLED' };
   }
+
 
   if (mode === 'limit' && (typeof req.limitPrice !== 'number' || req.limitPrice! <= 0)) {
     return { ok: false, error: 'INVALID_LIMIT_PRICE' };
