@@ -37,13 +37,15 @@ export function getLogger(bindings?: Record<string, any>): Logger {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
   const pino: any = require('pino');
       const base = pino({ level: process.env.LOG_LEVEL || 'info' });
-      loggerImpl = {
-        info: (o, m) => (m !== undefined ? base.info(o, m) : base.info(o)),
-        warn: (o, m) => (m !== undefined ? base.warn(o, m) : base.warn(o)),
-        error: (o, m) => (m !== undefined ? base.error(o, m) : base.error(o)),
-        debug: (o, m) => (m !== undefined ? base.debug(o, m) : base.debug(o)),
-        child: (b) => getLogger(b),
-      };
+      // Wrap pino without recursive getLogger() calls (avoids stack overflow).
+      const wrap = (underlying: any): Logger => ({
+        info: (o, m) => (m !== undefined ? underlying.info(o, m) : underlying.info(o)),
+        warn: (o, m) => (m !== undefined ? underlying.warn(o, m) : underlying.warn(o)),
+        error: (o, m) => (m !== undefined ? underlying.error(o, m) : underlying.error(o)),
+        debug: (o, m) => (m !== undefined ? underlying.debug(o, m) : underlying.debug(o)),
+        child: (b) => wrap(underlying.child ? underlying.child(b) : underlying),
+      });
+      loggerImpl = wrap(base);
     } catch {
       // Fallback to console
       loggerImpl = consoleLogger();
