@@ -1233,6 +1233,12 @@ async function startServer() {
   let recoveryStart: Date | null = null;
   let volatilityInterval: NodeJS.Timeout | null = null;
   let snapshotIntervalMinutesCurrent = Number(process.env.SNAPSHOT_INTERVAL_MINUTES || '60');
+  let anomalyInterval: NodeJS.Timeout | null = null;
+  let mongoWatchInterval: NodeJS.Timeout | null = null;
+  let learningInterval: NodeJS.Timeout | null = null;
+  let mongoReconnectBackoffMs = 15_000; // starts 15s, exponential backoff
+  const mongoReconnectMaxMs = 15 * 60 * 1000; // cap at 15 minutes
+  let mongoReconnecting = false;
 
   // Helper: create a live snapshot from Coinbase balances (internal reuse)
   async function createLiveSnapshot(reason: string) {
@@ -1718,6 +1724,136 @@ async function startServer() {
     } else {
       getLogger({ svc: 'api' }).info('LIGHT_MODE enabled: risk throttles disabled');
     }
+
+    // ---- Anomaly Detection & Alerting ----
+    if (!LIGHT_MODE) {
+      const anomalyEnabled = (process.env.ANOMALY_DETECT_ENABLED || 'true') === 'true';
+      if (anomalyEnabled) {
+        const checkMin = Number(process.env.ANOMALY_CHECK_MINUTES || '5');
+        const zThresh = Number(process.env.ANOMALY_Z_THRESHOLD || '3');
+        const singleStepPct = Number(process.env.ANOMALY_SINGLE_STEP_PCT || '2');
+        anomalyInterval = setInterval(async () => {
+          try {
+            if (!db) return;
+            const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+            const snaps = await db.collection('snapshots')
+              .find({ timestamp: { $gte: since } })
+              .sort({ timestamp: 1 })
+              .limit(500)
+              .toArray();
+            if (snaps.length < 6) return;
+            const totals: number[] = [];
+            const times: Date[] = [];
+            for (const s of snaps) {
+              const prices = (s as any)._prices || {};
+              let total = 0;
+              for (const k of Object.keys(s)) {
+                if (['_id','_prices','timestamp','reason'].includes(k)) continue;
+                const qty = (s as any)[k];
+                if (typeof qty === 'number') total += qty * (prices[k] || 0);
+              }
+              if (total > 0 && Number.isFinite(total)) {
+                totals.push(total);
+                times.push(new Date((s as any).timestamp));
+              }
+            }
+            if (totals.length < 6) return;
+            // Single-step percentage change check
+            const last = totals[totals.length - 1];
+            const prev = totals[totals.length - 2];
+            const stepPct = ((last - prev) / prev) * 100;
+            if (Math.abs(stepPct) >= singleStepPct) {
+              liveEvents.emit('alert', {
+                type: 'anomaly',
+                severity: Math.abs(stepPct) >= singleStepPct * 2 ? 'high' : 'medium',
+                message: `Portfolio total moved ${stepPct.toFixed(2)}% in one step`,
+                data: { stepPct, last, prev, at: times[totals.length - 1] },
+                timestamp: new Date().toISOString(),
+              });
+            }
+            // Z-score of last value vs series
+            const mean = totals.reduce((a,b)=>a+b,0) / totals.length;
+            const variance = totals.reduce((a,b)=> a + Math.pow(b - mean, 2), 0) / (totals.length - 1);
+            const std = Math.sqrt(Math.max(variance, 1e-9));
+            const z = (last - mean) / std;
+            if (Math.abs(z) >= zThresh) {
+              liveEvents.emit('alert', {
+                type: 'anomaly',
+                severity: Math.abs(z) >= zThresh * 1.5 ? 'high' : 'medium',
+                message: `Portfolio anomaly detected (z=${z.toFixed(2)})`,
+                data: { z, last, mean, std },
+                timestamp: new Date().toISOString(),
+              });
+            }
+          } catch {}
+        }, Math.max(1, checkMin) * 60 * 1000);
+      }
+    }
+
+    // ---- Self-healing Mongo Watchdog ----
+    if (!LIGHT_MODE) {
+      mongoWatchInterval = setInterval(async () => {
+        if (!MONGODB_URI) return;
+        try {
+          if (!db) throw new Error('db-not-connected');
+          await db.command({ ping: 1 });
+          // healthy; reset backoff
+          mongoReconnectBackoffMs = 15_000;
+        } catch (e: any) {
+          if (mongoReconnecting) return;
+          mongoReconnecting = true;
+          liveEvents.emit('alert', {
+            type: 'system',
+            severity: 'high',
+            message: `MongoDB disconnected, attempting reconnect in ${Math.round(mongoReconnectBackoffMs/1000)}s`,
+            data: { backoffMs: mongoReconnectBackoffMs },
+            timestamp: new Date().toISOString(),
+          });
+          setTimeout(async () => {
+            try {
+              await connectMongoDB();
+              if (db) {
+                liveEvents.emit('system:health', { component: 'mongodb', status: 'reconnected' });
+                getLogger({ svc: 'api' }).info('MongoDB reconnected (watchdog)');
+                mongoReconnectBackoffMs = 15_000;
+              } else {
+                mongoReconnectBackoffMs = Math.min(mongoReconnectBackoffMs * 2, mongoReconnectMaxMs);
+              }
+            } finally {
+              mongoReconnecting = false;
+            }
+          }, mongoReconnectBackoffMs);
+        }
+      }, 120_000);
+    }
+
+    // ---- Autonomous Learning Loop ----
+    if (!LIGHT_MODE) {
+      const learningEnabled = (process.env.LEARNING_LOOP_ENABLED || 'true') === 'true';
+      if (learningEnabled) {
+        const everyMin = Number(process.env.LEARNING_RECOMPUTE_MINUTES || '60');
+        learningInterval = setInterval(async () => {
+          try {
+            if (!db) return;
+            const { calculateUserPreferences } = await import('@coinruler/shared');
+            const decisions = await db.collection('trade_decisions').find({}).limit(5000).toArray();
+            const prefs = calculateUserPreferences(decisions as any);
+            await db.collection('ml_state').updateOne(
+              { key: 'preferences' },
+              { $set: { key: 'preferences', value: prefs, updatedAt: new Date(), count: decisions.length } },
+              { upsert: true }
+            );
+            liveEvents.emit('alert', {
+              type: 'learning',
+              severity: 'info',
+              message: `Preferences recomputed from ${decisions.length} decisions`,
+              data: { confidenceScore: (prefs as any)?.confidenceScore },
+              timestamp: new Date().toISOString(),
+            });
+          } catch {}
+        }, Math.max(5, everyMin) * 60 * 1000);
+      }
+    }
   });
 
   // Graceful shutdown
@@ -1732,6 +1868,9 @@ async function startServer() {
     try { clearInterval(snapshotInterval as any); } catch {}
     try { clearInterval(riskInterval as any); } catch {}
     try { clearInterval(volatilityInterval as any); } catch {}
+    try { clearInterval(anomalyInterval as any); } catch {}
+    try { clearInterval(mongoWatchInterval as any); } catch {}
+    try { clearInterval(learningInterval as any); } catch {}
     process.exit(0);
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
