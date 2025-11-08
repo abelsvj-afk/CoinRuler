@@ -35,15 +35,23 @@ export default function HomePage() {
 
     const fetchData = async () => {
       try {
-        // Enhanced diagnostics wrapper to classify failures (CORS, Mixed Content, DNS, TLS)
+        // Enhanced diagnostics wrapper with automatic proxy fallback on direct fetch failure
         const safeFetch = async (path: string) => {
           const url = `${apiBase}${path}`;
           const started = performance.now();
           try {
             const res = await fetch(url, { cache: 'no-store', mode: 'cors' });
-            return { res, ms: Math.round(performance.now() - started), url };
-          } catch (err: any) {
-            return { res: null, ms: Math.round(performance.now() - started), url, err };
+            return { res, ms: Math.round(performance.now() - started), url, via: 'direct' };
+          } catch (directErr: any) {
+            // Try server-side proxy to bypass CORS
+            console.warn(`Direct fetch failed for ${path}, trying proxy...`, directErr);
+            try {
+              const proxyUrl = `/api/ruler${path}`;
+              const proxyRes = await fetch(proxyUrl, { cache: 'no-store' });
+              return { res: proxyRes, ms: Math.round(performance.now() - started), url: proxyUrl, via: 'proxy' };
+            } catch (proxyErr: any) {
+              return { res: null, ms: Math.round(performance.now() - started), url, err: proxyErr, via: 'failed' };
+            }
           }
         };
 

@@ -36,30 +36,63 @@ export function getApiBase() {
 }
 
 export async function apiGet(path: string, init?: RequestInit) {
-  const url = `${getApiBase()}${path}`;
-  const res = await fetch(url, { ...init, cache: 'no-store' });
-  if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
-  return res.json();
+  const directUrl = `${getApiBase()}${path}`;
+  try {
+    const res = await fetch(directUrl, { ...init, cache: 'no-store' });
+    if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
+    return res.json();
+  } catch (err) {
+    // Fallback to server-side proxy on direct fetch failure (CORS/network)
+    console.warn(`Direct fetch failed for ${path}, trying proxy...`, err);
+    const proxyUrl = `/api/ruler${path}`;
+    const proxyRes = await fetch(proxyUrl, { ...init, cache: 'no-store' });
+    if (!proxyRes.ok) throw new Error(`Proxy GET ${path} failed: ${proxyRes.status}`);
+    return proxyRes.json();
+  }
 }
 
 export async function apiPost(path: string, body?: any, init?: RequestInit) {
-  const url = `${getApiBase()}${path}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) throw new Error(`POST ${path} failed: ${res.status}`);
-  return res.json();
+  const directUrl = `${getApiBase()}${path}`;
+  try {
+    const res = await fetch(directUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) throw new Error(`POST ${path} failed: ${res.status}`);
+    return res.json();
+  } catch (err) {
+    console.warn(`Direct POST failed for ${path}, trying proxy...`, err);
+    const proxyUrl = `/api/ruler${path}`;
+    const proxyRes = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!proxyRes.ok) throw new Error(`Proxy POST ${path} failed: ${proxyRes.status}`);
+    return proxyRes.json();
+  }
 }
 
 export async function apiPatch(path: string, body?: any, init?: RequestInit) {
-  const url = `${getApiBase()}${path}`;
-  const res = await fetch(url, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) throw new Error(`PATCH ${path} failed: ${res.status}`);
-  return res.json();
+  const directUrl = `${getApiBase()}${path}`;
+  try {
+    const res = await fetch(directUrl, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) throw new Error(`PATCH ${path} failed: ${res.status}`);
+    return res.json();
+  } catch (err) {
+    console.warn(`Direct PATCH failed for ${path}, trying proxy...`, err);
+    const proxyUrl = `/api/ruler${path}`;
+    const proxyRes = await fetch(proxyUrl, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (!proxyRes.ok) throw new Error(`Proxy PATCH ${path} failed: ${proxyRes.status}`);
+    return proxyRes.json();
+  }
 }
