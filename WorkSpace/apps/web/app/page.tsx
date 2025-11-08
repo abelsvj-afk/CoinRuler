@@ -25,6 +25,7 @@ export default function HomePage() {
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [portfolio, setPortfolio] = useState<any>(null);
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
   const apiBase = getApiBase();
@@ -194,6 +195,30 @@ export default function HomePage() {
     ? `Updated: ${new Date(updatedAt).toLocaleTimeString()} (${Math.floor((ageMs || 0) / 1000)}s ago)`
     : "No data yet";
 
+  // Helper: trigger live snapshot and refresh dashboard data
+  async function refreshSnapshot() {
+    if (snapshotBusy) return;
+    setSnapshotBusy(true);
+    try {
+      const res = await fetch(`${apiBase}/portfolio/snapshot/force`, { method: 'POST' });
+      if (res.ok) {
+        // Re-fetch after snapshot
+        const [healthRes, dashRes, portRes] = await Promise.all([
+          fetch(`${apiBase}/health`).then(r=>r.json()),
+          fetch(`${apiBase}/dashboard`).then(r=>r.json()),
+          fetch(`${apiBase}/portfolio/current`).then(r=>r.json()),
+        ]);
+        setHealth(healthRes);
+        setData(dashRes);
+        setPortfolio(portRes);
+      }
+    } catch (e) {
+      console.warn('Snapshot refresh failed', e);
+    } finally {
+      setSnapshotBusy(false);
+    }
+  }
+
   return (
     <div className="min-h-screen p-8">
       {/* Header */}
@@ -235,18 +260,33 @@ export default function HomePage() {
 
       {/* Data Freshness */}
       {hasData && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-4">
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-4 flex flex-wrap gap-3 items-center">
           <div className={`glass rounded-lg px-4 py-2 inline-flex items-center gap-2 text-sm ${isFresh ? 'text-green-400' : isStale ? 'text-red-400' : 'text-yellow-400'}`}>
             <div className={`w-2 h-2 rounded-full ${isFresh ? 'bg-green-400 animate-pulse' : isStale ? 'bg-red-400' : 'bg-yellow-400'}`} />
             {ageLabel}
           </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={snapshotBusy}
+            onClick={refreshSnapshot}
+          >{snapshotBusy ? 'Refreshing...' : 'Refresh Snapshot'}</Button>
+          {!hasData && (
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={snapshotBusy}
+              onClick={refreshSnapshot}
+            >{snapshotBusy ? 'Creating...' : 'Create Live Snapshot'}</Button>
+          )}
         </motion.div>
       )}
 
       {/* Stats */}
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <StatCard label="Total Value" value={`$${totalValueUSD.toFixed(2)}`} change={5.2} trend="up" icon={<DollarSign className="w-5 h-5 text-[#FFB800]" />} />
-        <StatCard label="BTC Holdings" value={`${btcFree.toFixed(8)}`} change={2.1} trend="up" icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-8">
+        <StatCard label="Total Value" value={`$${totalValueUSD.toFixed(2)}`} change={hasData ? 5.2 : undefined} trend={hasData ? 'up' : undefined} icon={<DollarSign className="w-5 h-5 text-[#FFB800]" />} />
+        <StatCard label="BTC Holdings" value={`${(balances.BTC || 0).toFixed(8)}`} change={hasData ? 2.1 : undefined} trend={hasData ? 'up' : undefined} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
+        <StatCard label="XRP Holdings" value={`${(balances.XRP || 0).toFixed(2)}`} change={hasData && balances.XRP ? 1.5 : undefined} trend={hasData ? 'up' : undefined} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
         <StatCard label="Active Trades" value={approvals.length} icon={<Activity className="w-5 h-5 text-[#FFB800]" />} />
         <StatCard label="System Status" value={killSwitch.enabled ? "Halted" : hasData ? "Active" : "No Data"} icon={<Shield className="w-5 h-5 text-[#FFB800]" />} />
       </motion.div>
@@ -332,21 +372,9 @@ export default function HomePage() {
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={async () => {
-                    try {
-                      const res = await fetch(`${apiBase}/portfolio/snapshot/force`, { method: 'POST' });
-                      if (res.ok) {
-                        const info = await res.json().catch(() => ({}));
-                        console.log('Snapshot created', info);
-                        window.location.reload();
-                      } else {
-                        console.warn('Snapshot failed', await res.text());
-                      }
-                    } catch (e) {
-                      console.warn('Snapshot error', e);
-                    }
-                  }}
-                >Create Live Snapshot</Button>
+                  disabled={snapshotBusy}
+                  onClick={refreshSnapshot}
+                >{snapshotBusy ? 'Creating...' : 'Create Live Snapshot'}</Button>
               </div>
             )}
           </div>

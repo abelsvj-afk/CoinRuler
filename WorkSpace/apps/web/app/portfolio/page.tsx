@@ -31,6 +31,7 @@ interface PortfolioData {
 
 export default function PortfolioPage() {
   const [portfolio, setPortfolio] = useState<PortfolioData | null>(null);
+  const [snapshotBusy, setSnapshotBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const api = getApiBase();
 
@@ -122,7 +123,26 @@ export default function PortfolioPage() {
 
   return (
     <main className="max-w-5xl mx-auto p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">Live Portfolio</h1>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h1 className="text-2xl font-semibold">Live Portfolio</h1>
+        <div className="flex gap-2">
+          <button
+            disabled={snapshotBusy}
+            onClick={async () => {
+              setSnapshotBusy(true);
+              try {
+                const res = await fetch(`${api}/portfolio/snapshot/force`, { method: 'POST' });
+                if (res.ok) {
+                  await loadPortfolio();
+                }
+              } finally {
+                setSnapshotBusy(false);
+              }
+            }}
+            className={`px-3 py-2 rounded text-sm font-semibold transition-colors ${snapshotBusy ? 'bg-gray-600 text-white' : 'bg-[#FFB800] text-black hover:opacity-90'}`}
+          >{snapshotBusy ? 'Refreshing...' : 'Refresh Snapshot'}</button>
+        </div>
+      </div>
 
       <div className="text-sm text-gray-600">
         Last updated: {new Date(portfolio.timestamp).toLocaleString()}
