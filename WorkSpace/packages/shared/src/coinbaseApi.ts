@@ -13,6 +13,13 @@ try {
   CdpClient = require('@coinbase/cdp-sdk').CdpClient;
 } catch {}
 
+// Optional Coinbase Platform SDK (new server-side SDK)
+let CoinbaseSdk: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  CoinbaseSdk = require('@coinbase/coinbase-sdk');
+} catch {}
+
 export interface CoinbaseBalance {
   currency: string;
   available: string;
@@ -48,6 +55,7 @@ export class CoinbaseApiClient {
   private apiSecret: string;
   private baseUrl = 'https://api.coinbase.com';
   private cdp: any = null;
+  private sdkReady = false;
 
   constructor(apiKey?: string, apiSecret?: string) {
     this.apiKey = apiKey || process.env.COINBASE_API_KEY || '';
@@ -60,6 +68,33 @@ export class CoinbaseApiClient {
         this.cdp = new CdpClient({ apiKey: this.apiKey, apiSecret: this.apiSecret });
       } catch (e) {
         console.warn('[CoinbaseAPI] CDP client init failed:', (e as any)?.message);
+      }
+    }
+
+    // Initialize Coinbase Platform SDK (preferred for wallet ops when available)
+    if (CoinbaseSdk) {
+      try {
+        const jsonPath = process.env.COINBASE_SDK_JSON;
+        const apiKeyName = process.env.COINBASE_SDK_API_KEY_NAME;
+        const privateKey = (process.env.COINBASE_SDK_PRIVATE_KEY || '').replace(/\n/g, '\n');
+        if (jsonPath) {
+          // Either pass the path string or an options object depending on SDK signature
+          try {
+            if (typeof CoinbaseSdk.Coinbase.configureFromJson === 'function') {
+              CoinbaseSdk.Coinbase.configureFromJson(jsonPath);
+            } else {
+              CoinbaseSdk.Coinbase.configureFromJson({ filePath: jsonPath });
+            }
+          } catch (e) {
+            console.warn('[CoinbaseAPI] coinbase-sdk configureFromJson failed:', (e as any)?.message);
+          }
+          this.sdkReady = true;
+        } else if (apiKeyName && privateKey) {
+          CoinbaseSdk.Coinbase.configure({ apiKeyName, privateKey, useServerSigner: process.env.COINBASE_SDK_SERVER_SIGNER === 'true' });
+          this.sdkReady = true;
+        }
+      } catch (e) {
+        console.warn('[CoinbaseAPI] coinbase-sdk init failed:', (e as any)?.message);
       }
     }
   }
@@ -174,6 +209,29 @@ export class CoinbaseApiClient {
       }
     }
 
+    // Try coinbase-sdk wallet augmentation (best-effort; structure may differ)
+    if (this.sdkReady && CoinbaseSdk?.Wallet?.listWallets) {
+      try {
+        const resp = await CoinbaseSdk.Wallet.listWallets();
+        const wallets = resp?.data || resp || [];
+        for (const w of wallets) {
+          const assets = (w?.assets || w?.balances || []);
+          if (Array.isArray(assets)) {
+            for (const a of assets) {
+              const cur = a?.asset?.symbol || a?.symbol || a?.currency;
+              const amtStr = a?.quantity || a?.amount || a?.value;
+              const amt = typeof amtStr === 'number' ? amtStr : parseFloat(amtStr || '0');
+              if (cur && amt > 0) {
+                balances[cur] = (balances[cur] || 0) + amt;
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[CoinbaseAPI] coinbase-sdk Wallet.listWallets failed:', (e as any)?.message);
+      }
+    }
+
     return balances;
   }
 
@@ -266,6 +324,13 @@ export class CoinbaseApiClient {
   async createWallet(label: string): Promise<any> {
     if (!this.cdp) throw new Error('CDP SDK not initialized');
     return await this.cdp.createWallet?.({ label });
+  }
+
+  // Coinbase SDK: list wallets (if configured)
+  async listWalletsSdk(): Promise<any[]> {
+    if (!this.sdkReady || !CoinbaseSdk?.Wallet?.listWallets) throw new Error('coinbase-sdk not configured');
+    const resp = await CoinbaseSdk.Wallet.listWallets();
+    return resp?.data || resp || [];
   }
 }
 

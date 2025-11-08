@@ -371,7 +371,41 @@ app.get('/coinbase/debug/cdp', ownerAuth, async (_req, res) => {
     } catch (e: any) {
       sample.walletsError = e?.message;
     }
+    // Try new Coinbase Platform SDK if configured
+    try {
+      const sdkWallets = await client.listWalletsSdk?.();
+      if (Array.isArray(sdkWallets)) {
+        sample.sdkWalletCount = sdkWallets.length;
+        sample.sdkFirstWallet = sdkWallets[0] || null;
+      }
+    } catch (e: any) {
+      sample.sdkError = e?.message;
+    }
     res.json({ ok: true, sample });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// List wallets via Coinbase Platform SDK (owner only), falls back to CDP
+app.get('/coinbase/wallets', ownerAuth, async (_req, res) => {
+  try {
+    const client = getCoinbaseApiClient();
+    const result: any = {};
+    try {
+      const sdkWallets = await client.listWalletsSdk?.();
+      result.sdk = { count: Array.isArray(sdkWallets) ? sdkWallets.length : 0, wallets: sdkWallets };
+    } catch (e: any) {
+      result.sdk = { error: e?.message };
+    }
+    try {
+      // @ts-ignore
+      const cdpWallets = await (client as any).cdp?.listWallets?.();
+      result.cdp = { count: Array.isArray(cdpWallets) ? cdpWallets.length : 0, wallets: cdpWallets };
+    } catch (e: any) {
+      result.cdp = { error: e?.message };
+    }
+    res.json({ ok: true, ...result });
   } catch (e: any) {
     res.status(500).json({ ok: false, error: e?.message || String(e) });
   }
