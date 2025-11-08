@@ -637,7 +637,15 @@ app.get('/health/full', async (_req, res) => {
         
         // Get collateral information (if available)
         try {
-          const collateral = await coinbaseClient.getCollateral();
+          // Try to fetch collateral - Coinbase's loans API endpoint
+          let collateral: any[] = [];
+          try {
+            const { CoinbaseApiClient } = await import('@coinruler/shared');
+            const client = new CoinbaseApiClient();
+            collateral = await client.getCollateral();
+          } catch (methodErr: any) {
+            console.warn('[Collateral] Method not available or API error:', methodErr.message);
+          }
           checks.coinbase.collateral = collateral;
           
           // Store collateral in MongoDB for risk layer and emit update event
@@ -1121,6 +1129,20 @@ app.get('/portfolio/current', async (_req, res) => {
     for (const c of collateralDocs) {
       const sym = (c.currency || '').toUpperCase();
       lockedAmounts[sym] = (lockedAmounts[sym] || 0) + (c.locked || 0);
+    }
+    
+    // Fetch BTC from cached Coinbase balances (includes available + locked/hold)
+    try {
+      const { getLatestBtcSnapshot } = await import('./services/btcWatcher');
+      const btcSnap = getLatestBtcSnapshot();
+      if (btcSnap) {
+        // Use total BTC (available + locked) for portfolio display
+        balances.BTC = btcSnap.balance.total;
+        // Track locked amount separately for collateral display
+        lockedAmounts.BTC = btcSnap.balance.locked;
+      }
+    } catch (err: any) {
+      console.warn('[BTC Watcher] Failed to get cached balances:', err.message);
     }
     
     // Load baselines first to determine which assets you've invested in
@@ -1665,24 +1687,35 @@ app.get('/collateral/status', async (_req, res) => {
   try {
     if (!db) return res.status(503).json({ error: 'Database not connected' });
 
-    const collateralDocs = await db.collection('collateral').find({}).toArray();
-    const btcCollateral = collateralDocs.filter((c: any) => (c.currency || '').toUpperCase() === 'BTC');
+    // Get BTC balances from cached Coinbase data
+    let btcFree = 0;
+    let btcLocked = 0;
+    let btcTotal = 0;
+    let health: any = null;
+    let lastUpdate: number | null = null;
 
-    const btcLocked = btcCollateral.reduce((sum: number, c: any) => sum + (c.locked || 0), 0);
+    try {
+      const { getLatestBtcSnapshot } = await import('./services/btcWatcher');
+      const btcSnap = getLatestBtcSnapshot();
+      if (btcSnap) {
+        btcFree = btcSnap.balance.available;
+        btcLocked = btcSnap.balance.locked;
+        btcTotal = btcSnap.balance.total;
+        health = btcSnap.health;
+        lastUpdate = btcSnap.ts;
+      }
+    } catch (err: any) {
+      console.warn('[BTC Watcher] Failed to get collateral status:', err.message);
+    }
 
     const latest = await db.collection('snapshots').findOne({}, { sort: { timestamp: -1 } });
     const prices = (latest as any)?._prices || {};
-    const btcTotal = (latest as any)?.BTC || 0;
-    const btcFree = Math.max(0, btcTotal - btcLocked);
-
-    const ltvs = collateralDocs.map((c: any) => c.ltv).filter((ltv: any) => typeof ltv === 'number');
-    const maxLTV = ltvs.length ? Math.max(...ltvs) : null;
+    const btcPrice = prices.BTC || 0;
 
     const lockedPct = btcTotal > 0 ? btcLocked / btcTotal : 0;
-    const btcExposureUSD = btcTotal * (prices.BTC || 0);
-    const btcLockedUSD = btcLocked * (prices.BTC || 0);
-    const btcFreeUSD = btcFree * (prices.BTC || 0);
-    const ltvPct = maxLTV !== null ? maxLTV * 100 : null;
+    const btcExposureUSD = btcTotal * btcPrice;
+    const btcLockedUSD = btcLocked * btcPrice;
+    const btcFreeUSD = btcFree * btcPrice;
 
     res.json({
       btcTotal,
@@ -1692,13 +1725,14 @@ app.get('/collateral/status', async (_req, res) => {
       btcLockedUSD: Number(btcLockedUSD.toFixed(2)),
       btcFreeUSD: Number(btcFreeUSD.toFixed(2)),
       lockedPct: Number((lockedPct * 100).toFixed(2)),
-      maxLTV,
-      ltvPct,
-      collateralPositions: collateralDocs.length,
-      collateralFlag: btcLocked > 0 ? 'BTC is being used as loan collateral' : 'No BTC collateral lock',
-      warning: maxLTV && maxLTV > 0.6 ? 'High LTV detected' : null,
-      updatedAt: latest?.timestamp || null,
-      hasCollateral: collateralDocs.length > 0,
+      healthBadge: health ? health.label : 'Unknown',
+      healthTone: health ? health.tone : 'neutral',
+      healthTooltip: health ? health.tooltip : 'BTC watcher not initialized',
+      collateralSource: btcLocked > 0 ? 'Coinbase' : 'None',
+      collateralFlag: btcLocked > 0 ? `BTC locked as collateral (${Number((lockedPct * 100).toFixed(1))}%)` : 'No BTC collateral lock',
+      warning: health && health.tone === 'critical' ? 'High utilization detected - consider adding BTC' : null,
+      updatedAt: lastUpdate ? new Date(lastUpdate).toISOString() : latest?.timestamp || null,
+      hasCollateral: btcLocked > 0,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2365,6 +2399,15 @@ async function startServer() {
   const log = getLogger({ svc: 'api' });
   log.warn('MongoDB not connected - many features will be unavailable');
   log.warn('Troubleshooting: https://www.mongodb.com/docs/atlas/troubleshoot-connection/');
+    }
+    
+    // Start BTC watcher to poll Coinbase balances
+    try {
+      const { startBtcWatcher } = await import('./services/btcWatcher');
+      startBtcWatcher();
+      log.info('BTC watcher started - polling Coinbase balances every 90s');
+    } catch (err: any) {
+      log.warn(`Failed to start BTC watcher: ${err.message}`);
     }
     
     // Start credential rotation scheduler if DB is ready and not in LIGHT_MODE

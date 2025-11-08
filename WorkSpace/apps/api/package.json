@@ -10,6 +10,7 @@
     "test": "jest"
   },
   "dependencies": {
+    "@coinbase/cdp-sdk": "^1.38.5",
     "@coinruler/llm": "^0.1.0",
     "@coinruler/rules": "^0.1.0",
     "@coinruler/shared": "^0.1.0",
