@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { getApiBase } from '../lib/api';
 import { Button } from '@/components/ui/Button';
+import { BackBar } from '../components/BackBar';
 
 interface PriceAnalyticsCoin {
   last: number;
@@ -40,7 +41,7 @@ export default function AnalysisPage() {
 
   return (
     <div className="p-8 space-y-8">
-      <h1 className="text-3xl font-bold">Price Analytics</h1>
+      <BackBar title="Price Analytics" />
       <p className="text-white/60 text-sm">SMA(7/30), 24h returns, and 7d volatility for core assets derived from historical snapshots.</p>
 
       <div className="glass rounded-xl p-4 flex flex-wrap gap-3 items-center">

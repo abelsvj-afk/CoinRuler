@@ -71,12 +71,13 @@ if (typeof WebSocket !== 'undefined') {
 }
 
 // Validate environment early
+// Soft environment validation: log problems but continue in degraded/local mode
 try {
   validateEnv();
   getLogger({ svc: 'api' }).info('Environment variables validated');
-} catch (e) {
-  getLogger({ svc: 'api' }).error('Environment validation failed. Exiting.');
-  process.exit(1);
+} catch (e: any) {
+  console.warn('⚠️ Environment validation failed, continuing in LIGHT_MODE (degraded).', e?.message);
+  process.env.LIGHT_MODE = 'true';
 }
 
 // Real-time event emitter for SSE
@@ -1137,10 +1138,11 @@ app.get('/portfolio/current', async (_req, res) => {
       if (collDocs && collDocs.length) {
         const btc = collDocs.filter((c: any) => (c.currency || '').toUpperCase() === 'BTC');
         const btcLocked = btc.reduce((s: number, c: any) => s + (c.locked || 0), 0);
-        const btcFree = balances.BTC || 0;
+        const btcTotal = balances.BTC || 0;
+        const btcFree = Math.max(0, btcTotal - btcLocked);
         const ltvs = collDocs.map((c: any) => typeof c.ltv === 'number' ? c.ltv : null).filter((x: any) => x !== null);
         const ltv = ltvs.length ? Math.max(...ltvs) : null;
-        collateralSummary = { btcLocked, btcFree, ltv };
+        collateralSummary = { btcTotal, btcLocked, btcFree, ltv };
       }
     } catch {}
 
@@ -1150,7 +1152,7 @@ app.get('/portfolio/current', async (_req, res) => {
       totalValueUSD: Number(usdTotal.toFixed(2)),
       baselines,
       xrpAboveBaseline: balances.XRP && baselines.XRP?.baseline ? Math.max(0, balances.XRP - baselines.XRP.baseline) : 0,
-      btcFree: balances.BTC || 0, // collateral lock handled separately
+      btcFree: collateralSummary?.btcFree ?? (balances.BTC || 0),
       totalChange24hPct,
       priceChange24hPct,
       collateral: collateralSummary,
@@ -1369,6 +1371,10 @@ app.post('/analysis/profit-taking/scan', ownerAuth, async (_req, res) => {
       timestamp: new Date().toISOString(),
     });
     res.json({ ok: true, approvalsCreated: created });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ML Price Predictions (Requirement 12)
 app.get('/analysis/predictions', async (req, res) => {
@@ -1555,10 +1561,6 @@ app.get('/collateral/status', async (_req, res) => {
       collateralPositions: collateralDocs.length,
       warning: maxLTV && maxLTV > 0.6 ? 'High LTV detected' : null,
     });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
-});
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -2959,8 +2961,10 @@ async function startServer() {
 
 // Start the server
 startServer().catch((err) => {
-  getLogger({ svc: 'api' }).error({ err }, 'Fatal startup error');
-  process.exit(1);
+  // Soft-fail: log and keep process alive for diagnostics instead of exiting
+  try {
+    getLogger({ svc: 'api' }).error({ err: err?.message || String(err) }, 'Fatal startup error');
+  } catch {}
 });
 
 // Safety: prevent process exit on unexpected errors

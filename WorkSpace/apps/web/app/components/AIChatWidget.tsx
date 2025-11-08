@@ -48,7 +48,7 @@ export function AIChatWidget() {
         return `📊 Monte Carlo Results:\n\nMean: $${data.monteCarlo.mean.toFixed(2)}\nMedian: $${data.monteCarlo.median.toFixed(2)}\nP5: $${data.monteCarlo.percentile_5.toFixed(2)}\nP95: $${data.monteCarlo.percentile_95.toFixed(2)}\n\nConfidence: ${(data.confidence * 100).toFixed(0)}%\nSamples: ${data.summary.samples}`;
       }
       
-      // Portfolio balance query
+            return `BTC Holdings:\n\nTotal: ${(data.collateral?.btcTotal ?? data.balances.BTC ?? 0).toFixed(8)} BTC\nFree: ${(data.btcFree ?? data.collateral?.btcFree ?? 0).toFixed(8)} BTC\nLocked: ${(data.collateral?.btcLocked ?? 0).toFixed(8)} BTC\nPrice: $${(data.prices.BTC ?? 0).toFixed(2)}\nValue: $${(((data.collateral?.btcTotal ?? data.balances.BTC) || 0) * (data.prices.BTC || 0)).toFixed(2)}\nNote: Locked BTC is collateral and will not be sold until the loan is repaid.`;
       if (lower.includes('balance') || lower.includes('holdings') || lower.includes('portfolio')) {
         const response = await fetch('/api/ruler/portfolio/current');
         const data = await response.json();
@@ -215,7 +215,7 @@ export function AIChatWidget() {
                         ? 'bg-[#FFB800] text-black'
                         : msg.role === 'system'
                         ? 'bg-red-500/20 text-red-300'
-                        : 'glass'
+                        : 'bg-black/70 text-white border border-white/10'
                     }`}
                   >
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>

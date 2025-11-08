@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from 'react';
 import { getApiBase } from '../lib/api';
+import { BackBar } from '../components/BackBar';
 
 type Approval = { _id: string; title: string; coin?: string; amount?: number };
 
@@ -43,7 +44,7 @@ export default function ApprovalsPage() {
 
   return (
     <main className="max-w-3xl mx-auto p-6 space-y-4">
-      <h1 className="text-2xl font-semibold">Approvals</h1>
+      <BackBar title="Approvals" />
       <button className="underline" onClick={load} disabled={loading}>Refresh</button>
       {loading && <div>Loading…</div>}
       {error && <div className="text-red-600">{error}</div>}

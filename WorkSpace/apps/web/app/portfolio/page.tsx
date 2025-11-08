@@ -3,6 +3,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { getApiBase, apiPost } from '../lib/api';
 import { useSSE, type SSEEvent } from '../lib/useSSE';
 import { showToast } from '../components/Toast';
+import { BackBar } from '../components/BackBar';
 
 interface PortfolioAsset {
   coin: string;
@@ -123,8 +124,9 @@ export default function PortfolioPage() {
 
   return (
     <main className="max-w-5xl mx-auto p-6 space-y-6">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-2xl font-semibold">Live Portfolio</h1>
+      <BackBar title="Live Portfolio" />
+      
+      <div className="flex items-center justify-end flex-wrap gap-3">
         <div className="flex gap-2">
           <button
             disabled={snapshotBusy}

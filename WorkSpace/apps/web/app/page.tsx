@@ -356,16 +356,15 @@ export default function HomePage() {
       {/* Stats */}
   <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-6 mb-8">
   <StatCard label="Total Value" value={`$${totalValueUSD.toFixed(2)}`} change={portfolio?.totalChange24hPct ?? undefined} trend={(portfolio?.totalChange24hPct ?? 0) >= 0 ? 'up' : 'down'} icon={<DollarSign className="w-5 h-5 text-[#FFB800]" />} />
-  <StatCard label="BTC Holdings" value={`${(balances.BTC || 0).toFixed(8)}`} change={portfolio?.priceChange24hPct?.BTC ?? undefined} trend={(portfolio?.priceChange24hPct?.BTC ?? 0) >= 0 ? 'up' : 'down'} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
+  <StatCard label="BTC Total" value={`${((portfolio?.collateral?.btcTotal ?? balances.BTC) || 0).toFixed(8)}`} change={portfolio?.priceChange24hPct?.BTC ?? undefined} trend={(portfolio?.priceChange24hPct?.BTC ?? 0) >= 0 ? 'up' : 'down'} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
+  <StatCard label="BTC Free" value={`${(btcFree || 0).toFixed(8)}`} icon={<TrendingUp className="w-5 h-5 text-green-400" />} />
+  <StatCard label="BTC Locked" value={`${(btcLocked || 0).toFixed(8)}`} icon={<Shield className="w-5 h-5 text-yellow-400" />} />
   <StatCard label="XRP Holdings" value={`${(balances.XRP || 0).toFixed(2)}`} change={portfolio?.priceChange24hPct?.XRP ?? undefined} trend={(portfolio?.priceChange24hPct?.XRP ?? 0) >= 0 ? 'up' : 'down'} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
   <StatCard label="USDC Holdings" value={`$${(balances.USDC || 0).toFixed(2)}`} change={portfolio?.priceChange24hPct?.USDC ?? undefined} trend={(portfolio?.priceChange24hPct?.USDC ?? 0) >= 0 ? 'up' : 'down'} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
-        <StatCard label="Active Trades" value={approvals.length} icon={<Activity className="w-5 h-5 text-[#FFB800]" />} />
+        <StatCard label="Active Approvals" value={approvals.length} icon={<Activity className="w-5 h-5 text-[#FFB800]" />} />
         <StatCard label="System Status" value={killSwitch.enabled ? "Halted" : hasData ? "Active" : "No Data"} icon={<Shield className="w-5 h-5 text-[#FFB800]" />} />
-        {ltv !== null && (
+        {ltv !== null && ltv > 0 && (
           <StatCard label="LTV" value={`${(ltv*100).toFixed(1)}%`} change={undefined} icon={<Shield className="w-5 h-5 text-[#FFB800]" />} />
-        )}
-        {btcLocked !== null && (
-          <StatCard label="BTC Locked" value={`${Number(btcLocked).toFixed(8)}`} icon={<TrendingUp className="w-5 h-5 text-[#FFB800]" />} />
         )}
       </motion.div>
 
@@ -387,9 +386,20 @@ export default function HomePage() {
                   <div className="glass rounded-lg p-4">
                     <div className="flex justify-between items-center">
                       <span className="text-white/60">BTC</span>
-                      <span className="font-mono font-bold text-lg">{balances.BTC.toFixed(8)}</span>
+                      <span className="font-mono font-bold text-lg">{((portfolio?.collateral?.btcTotal ?? balances.BTC) || 0).toFixed(8)}</span>
                     </div>
-                    {prices.BTC && <div className="text-sm text-white/40 mt-1">${(balances.BTC * prices.BTC).toFixed(2)} USD</div>}
+                    {prices.BTC && <div className="text-sm text-white/40 mt-1">${(((portfolio?.collateral?.btcTotal ?? balances.BTC) || 0) * prices.BTC).toFixed(2)} USD</div>}
+                    {btcLocked !== null && btcLocked > 0 && (
+                      <div className="text-xs text-yellow-300 mt-1 flex items-center gap-1">
+                        <Shield className="w-3 h-3" />
+                        {btcLocked.toFixed(8)} BTC locked (collateral)
+                      </div>
+                    )}
+                    {btcFree !== null && (
+                      <div className="text-xs text-green-300 mt-1">
+                        {btcFree.toFixed(8)} BTC available
+                      </div>
+                    )}
                     {baselines.BTC?.baseline !== undefined && (
                       <div className="text-xs text-white/30 mt-1">Baseline: {baselines.BTC.baseline.toFixed(8)} BTC</div>
                     )}
@@ -510,17 +520,21 @@ export default function HomePage() {
           <div className="p-6">
             <h3 className="text-xl font-bold mb-4">Quick Actions</h3>
             <div className="flex flex-wrap gap-3">
-              <Button variant="primary" onClick={() => router.push('/approvals')}>
-                <TrendingUp className="w-4 h-4" />
-                View Approvals
-              </Button>
-              <Button variant="secondary" onClick={() => router.push('/dashboard')}>
+              <Button variant="primary" onClick={() => router.push('/activity')}>
                 <Activity className="w-4 h-4" />
-                Full Dashboard
+                Activity Feed
+              </Button>
+              <Button variant="secondary" onClick={() => router.push('/approvals')}>
+                <TrendingUp className="w-4 h-4" />
+                Approvals
+              </Button>
+              <Button variant="secondary" onClick={() => router.push('/portfolio')}>
+                <DollarSign className="w-4 h-4" />
+                Portfolio
               </Button>
               <Button variant="secondary" onClick={() => router.push('/alerts')}>
                 <Shield className="w-4 h-4" />
-                View Alerts
+                Alerts
               </Button>
               <Button variant="ghost" onClick={() => router.push('/commands')}>
                 <Zap className="w-4 h-4" />
