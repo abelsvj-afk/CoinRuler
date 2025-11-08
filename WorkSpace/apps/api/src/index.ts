@@ -1115,6 +1115,14 @@ app.get('/portfolio/current', async (_req, res) => {
         // usdTotal will be recomputed after filtering below
       } catch {}
     }
+    // Load collateral data to capture locked BTC/SOL/ETH
+    const collateralDocs = await db?.collection('collateral').find({}).toArray() || [];
+    const lockedAmounts: Record<string, number> = {};
+    for (const c of collateralDocs) {
+      const sym = (c.currency || '').toUpperCase();
+      lockedAmounts[sym] = (lockedAmounts[sym] || 0) + (c.locked || 0);
+    }
+    
     // Load baselines first to determine which assets you've invested in
     const baselineDoc = await db?.collection('baselines').findOne({ key: 'owner' });
     let baselines = baselineDoc?.value || { BTC: { baseline: balances.BTC || 0 }, XRP: { baseline: Math.max(10, balances.XRP || 0) } };
@@ -1122,17 +1130,18 @@ app.get('/portfolio/current', async (_req, res) => {
       await db.collection('baselines').insertOne({ key: 'owner', value: baselines, createdAt: new Date() });
     }
     
-    // Filter to only crypto where you've invested money (baseline > 0 means you deposited)
+    // Filter to show all holdings: qty > 0 OR has locked collateral OR has baseline
     const filteredBalances: Record<string, number> = {};
     const filteredPrices: Record<string, number> = {};
     usdTotal = 0;
     for (const sym of Object.keys(balances)) {
       const qty = balances[sym] || 0;
+      const locked = lockedAmounts[sym] || 0;
       const baseline = baselines[sym]?.baseline || 0;
       const px = prices[sym] || 0;
       const usd = qty * px;
-      // Only show if you've invested (baseline > 0) and currently hold some (qty > 0)
-      if (qty > 0 && baseline > 0) {
+      // Show if: holding free balance OR has locked collateral OR has investment baseline
+      if (qty > 0 || locked > 0 || baseline > 0) {
         filteredBalances[sym] = qty;
         filteredPrices[sym] = px;
         usdTotal += usd;
