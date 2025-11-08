@@ -76,9 +76,14 @@ try {
 // Real-time event emitter for SSE
 const liveEvents = new EventEmitter();
 let sseClientCount = 0;
-liveEvents.setMaxListeners(100); // Support many concurrent SSE clients
+liveEvents.setMaxListeners(200); // Support many concurrent SSE clients (increased from 100)
 
 const app = express();
+
+// Trust Railway proxy (or other reverse proxy) for X-Forwarded-* headers
+// Required for rate-limit and client IP detection behind proxy
+app.set('trust proxy', 1);
+
 app.use(helmet({
   contentSecurityPolicy: false, // Allow SSE
 }));
@@ -89,7 +94,8 @@ app.use(helmet({
 //  - https://app.example.com
 //  - *.example.com
 //  - https://*.vercel.app (scheme-prefixed wildcard)
-const ORIGIN_RAW = process.env.WEB_ORIGIN || process.env.NEXT_PUBLIC_WEB_ORIGIN || 'http://localhost:3000';
+//  - https://mycoinruler.xyz (custom domain)
+const ORIGIN_RAW = process.env.WEB_ORIGIN || process.env.NEXT_PUBLIC_WEB_ORIGIN || 'http://localhost:3000,https://mycoinruler.xyz';
 const ORIGINS = ORIGIN_RAW.split(',').map(o => o.trim()).filter(Boolean);
 
 type AllowedOrigin = {
