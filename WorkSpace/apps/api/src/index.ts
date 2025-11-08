@@ -344,6 +344,30 @@ app.get('/coinbase/status', async (_req, res) => {
   }
 });
 
+// Owner-only CDP diagnostics: signature + optional wallet sample
+app.get('/coinbase/debug/cdp', ownerAuth, async (_req, res) => {
+  try {
+    const client = getCoinbaseApiClient();
+    const sample: any = {};
+    // Try CDP wallet list augmentation if supported
+    try {
+      // Access private cdp field via any
+      // @ts-ignore
+      const wallets = await (client as any).cdp?.listWallets?.();
+      if (Array.isArray(wallets)) {
+        sample.walletCount = wallets.length;
+        sample.firstWallet = wallets[0]?.id || wallets[0]?.uuid || null;
+        sample.firstWalletAssets = wallets[0]?.assets?.slice(0,3) || [];
+      }
+    } catch (e: any) {
+      sample.walletsError = e?.message;
+    }
+    res.json({ ok: true, sample });
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
 // Version endpoint to verify deployed build hash/time
 app.get('/version', (_req, res) => {
   res.json({

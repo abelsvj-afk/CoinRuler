@@ -11,6 +11,7 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
+    "@coinbase/cdp-sdk": "^0.0.1",
     "@types/ws": "^8.18.1",
     "ws": "^8.18.3",
     "zod": "^3.23.8"

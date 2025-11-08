@@ -5,6 +5,13 @@
 
 import axios from 'axios';
 import crypto from 'crypto';
+// Optional CDP SDK (wallet operations / extended APIs)
+let CdpClient: any = null;
+try {
+  // Lazy require so build doesn't break if dependency missing in some deployment slice
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  CdpClient = require('@coinbase/cdp-sdk').CdpClient;
+} catch {}
 
 export interface CoinbaseBalance {
   currency: string;
@@ -32,12 +39,21 @@ export class CoinbaseApiClient {
   private apiKey: string;
   private apiSecret: string;
   private baseUrl = 'https://api.coinbase.com';
+  private cdp: any = null;
 
   constructor(apiKey?: string, apiSecret?: string) {
     this.apiKey = apiKey || process.env.COINBASE_API_KEY || '';
     // Handle escaped newlines in the private key
     const rawSecret = apiSecret || process.env.COINBASE_API_SECRET || '';
     this.apiSecret = rawSecret.replace(/\\n/g, '\n');
+    // Initialize CDP client if SDK and credentials present
+    if (CdpClient && this.apiKey && this.apiSecret) {
+      try {
+        this.cdp = new CdpClient({ apiKey: this.apiKey, apiSecret: this.apiSecret });
+      } catch (e) {
+        console.warn('[CoinbaseAPI] CDP client init failed:', (e as any)?.message);
+      }
+    }
   }
 
   private sign(timestamp: string, method: string, path: string, body = ''): string {
@@ -63,8 +79,15 @@ export class CoinbaseApiClient {
     };
 
     const url = `${this.baseUrl}${path}`;
-    const response = await axios({ method, url, headers, data: body, timeout: 10000 });
-    return response.data;
+    try {
+      const response = await axios({ method, url, headers, data: body, timeout: 10000 });
+      return response.data;
+    } catch (err: any) {
+      const code = err?.response?.status;
+      const msg = err?.response?.data || err?.message;
+      console.warn(`[CoinbaseAPI] ${method} ${path} failed (${code}) ${typeof msg === 'string' ? msg : JSON.stringify(msg)}`);
+      throw err;
+    }
   }
 
   /**
@@ -72,7 +95,8 @@ export class CoinbaseApiClient {
    */
   async getAccounts(): Promise<CoinbaseAccount[]> {
     const data = await this.request('GET', '/api/v3/brokerage/accounts');
-    return data.accounts || [];
+    if (!data.accounts || !Array.isArray(data.accounts)) return [];
+    return data.accounts;
   }
 
   /**
@@ -88,15 +112,39 @@ export class CoinbaseApiClient {
    * Get all balances as a simple map
    */
   async getAllBalances(): Promise<Record<string, number>> {
-    const accounts = await this.getAccounts();
-    const balances: Record<string, number> = {};
-    for (const account of accounts) {
-      const available = parseFloat(account.available_balance.value);
-      if (available > 0) {
-        balances[account.currency] = available;
+    try {
+      const accounts = await this.getAccounts();
+      const balances: Record<string, number> = {};
+      for (const account of accounts) {
+        const available = parseFloat(account.available_balance.value);
+        if (available > 0) balances[account.currency] = available;
       }
+      // If CDP SDK available, attempt wallet balance augmentation (non-fatal)
+      if (this.cdp) {
+        try {
+          const wallets = await this.cdp.listWallets?.();
+          if (Array.isArray(wallets)) {
+            for (const w of wallets) {
+              const assets = w?.assets || [];
+              for (const a of assets) {
+                const cur = a?.asset?.symbol || a?.symbol;
+                const amt = parseFloat(a?.quantity || a?.amount || '0');
+                if (cur && amt > 0) {
+                  balances[cur] = (balances[cur] || 0) + amt;
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('[CoinbaseAPI] CDP wallet augmentation failed:', (e as any)?.message);
+        }
+      }
+      return balances;
+    } catch (e) {
+      // Graceful fallback: return empty balances
+      console.warn('[CoinbaseAPI] getAllBalances failed:', (e as any)?.message);
+      return {};
     }
-    return balances;
   }
 
   /**
@@ -132,6 +180,10 @@ export class CoinbaseApiClient {
   async testConnection(): Promise<boolean> {
     try {
       await this.getAccounts();
+      // Optionally verify CDP client
+      if (this.cdp) {
+        try { await this.cdp.listWallets?.(); } catch {}
+      }
       return true;
     } catch {
       return false;
@@ -178,6 +230,12 @@ export class CoinbaseApiClient {
     };
 
     return await this.request('POST', '/api/v3/brokerage/orders', order);
+  }
+
+  // CDP wallet creation helper (experimental)
+  async createWallet(label: string): Promise<any> {
+    if (!this.cdp) throw new Error('CDP SDK not initialized');
+    return await this.cdp.createWallet?.({ label });
   }
 }
 
