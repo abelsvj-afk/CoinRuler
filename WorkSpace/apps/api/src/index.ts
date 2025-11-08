@@ -247,6 +247,9 @@ app.get('/env', (_req, res) => {
     port: Number(process.env.API_PORT || process.env.PORT || 3001),
     hasMongoUri: !!process.env.MONGODB_URI,
     hasOwnerId: !!getEnv().OWNER_ID,
+    hasCoinbaseKey: !!process.env.COINBASE_API_KEY,
+    hasCoinbaseSecret: !!process.env.COINBASE_API_SECRET,
+    coinbaseKeyLength: process.env.COINBASE_API_KEY?.length || 0,
   });
 });
 

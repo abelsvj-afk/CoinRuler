@@ -14,7 +14,9 @@ export function SSEStatus() {
 
     const connect = () => {
       try {
-        es = new EventSource(`${apiBase}/live`);
+        // Try proxy first since direct Railway SSE may fail with CORS
+        const sseUrl = `/api/ruler/live`;
+        es = new EventSource(sseUrl);
         
         es.onopen = () => {
           setConnected(true);
