@@ -35,20 +35,49 @@ export default function HomePage() {
 
     const fetchData = async () => {
       try {
-        const [healthRes, dashRes, portfolioRes] = await Promise.all([
-          fetch(`${apiBase}/health`, { cache: "no-store" }),
-          fetch(`${apiBase}/dashboard`, { cache: "no-store" }),
-          fetch(`${apiBase}/portfolio/current`, { cache: "no-store" })
+        // Enhanced diagnostics wrapper to classify failures (CORS, Mixed Content, DNS, TLS)
+        const safeFetch = async (path: string) => {
+          const url = `${apiBase}${path}`;
+          const started = performance.now();
+          try {
+            const res = await fetch(url, { cache: 'no-store', mode: 'cors' });
+            return { res, ms: Math.round(performance.now() - started), url };
+          } catch (err: any) {
+            return { res: null, ms: Math.round(performance.now() - started), url, err };
+          }
+        };
+
+        const [healthWrap, dashWrap, portfolioWrap] = await Promise.all([
+          safeFetch('/health'),
+          safeFetch('/dashboard'),
+          safeFetch('/portfolio/current')
         ]);
-        
-        if (!healthRes.ok || !dashRes.ok || !portfolioRes.ok) {
-          throw new Error(`API responded with status ${healthRes.status}/${dashRes.status}/${portfolioRes.status}`);
+
+        if (!healthWrap.res || !dashWrap.res || !portfolioWrap.res) {
+          // Build a rich diagnostic message
+          const classify = (w: any) => {
+            if (w.res) return `${w.url} -> ${w.res.status} in ${w.ms}ms`;
+            const m = w.err?.message || 'fetch failed';
+            if (m.includes('Failed to fetch')) {
+              if (typeof window !== 'undefined' && window.location.protocol === 'https:' && w.url.startsWith('http:')) {
+                return `${w.url} -> Mixed Content blocked (https page calling http api)`;
+              }
+              return `${w.url} -> Network/CORS failure (${m})`;
+            }
+            return `${w.url} -> ${m}`;
+          };
+          const detail = [classify(healthWrap), classify(dashWrap), classify(portfolioWrap)].join(' | ');
+          throw new Error(detail);
+        }
+
+        if (!healthWrap.res.ok || !dashWrap.res.ok || !portfolioWrap.res.ok) {
+          throw new Error(`API responded with status ${healthWrap.res.status}/${dashWrap.res.status}/${portfolioWrap.res.status}`);
         }
 
         const [healthJson, dashJson, portfolioJson] = await Promise.all([
-          healthRes.json(),
-          dashRes.json(),
-          portfolioRes.json()
+          healthWrap.res.json(),
+          dashWrap.res.json(),
+          portfolioWrap.res.json()
         ]);
 
         if (isMounted) {

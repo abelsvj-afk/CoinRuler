@@ -15,7 +15,12 @@ export function getApiBase() {
       }
     }
   } catch {}
-  const envBase = process.env.NEXT_PUBLIC_API_BASE || process.env.API_BASE || process.env.API_BASE_URL;
+  // Support multiple legacy / variant variable names (some examples in .env.local.example)
+  const envBase =
+    process.env.NEXT_PUBLIC_API_BASE ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    process.env.API_BASE ||
+    process.env.API_BASE_URL;
   if (envBase) {
     cachedBase = envBase.replace(/\/$/, '');
     return cachedBase;
